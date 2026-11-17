@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>J.A.R.V.I.S.</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="description" content="J.A.R.V.I.S. — Türkçe kişisel yapay zeka asistanı">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- ANA EKRAN: yalnızca seçili modun görseli, durum kelimesi ve kısa altyazı -->
+<main id="stage" aria-label="JARVIS. Dokun: konuş. Yukarı kaydır: yaz. Çift dokun: mod. Uzun bas: ayarlar.">
+  <canvas id="hud"></canvas>
+  <div id="sub" class="sub" aria-live="polite"></div>
+  <div id="stateText" class="state">HAZIR</div>
+  <div id="hint" class="hint" hidden>dokun: konuş · yukarı kaydır: yaz · çift dokun: mod · uzun bas: ayarlar</div>
+</main>
+
+<div id="banner" class="banner" hidden>
+  <span id="bannerText"></span>
+  <button id="bannerBtn" class="mini"></button>
+  <button id="bannerClose" class="x" aria-label="Kapat">×</button>
+</div>
+
+<!-- YAZI KUTUSU (yukarı kaydırınca) -->
+<form id="composer" autocomplete="off" aria-hidden="true">
+  <div class="grip" id="composerGrip"></div>
+  <div class="row">
+    <textarea id="input" rows="1" placeholder="JARVIS'e yaz…" enterkeyhint="send"></textarea>
+    <button type="button" id="mic" class="round mic" aria-label="Konuş">
+      <svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-2.1A7 7 0 0 0 19 12h-2Z"/></svg>
+    </button>
+    <button type="submit" id="send" class="round send" aria-label="Gönder">
+      <svg viewBox="0 0 24 24"><path d="M3 20.5 21 12 3 3.5v6.6L15 12 3 13.9v6.6Z"/></svg>
+    </button>
+  </div>
+</form>
+
+<!-- AYAR KATMANI (uzun bas): ayarlar, sistem/görevler, kask ve son konuşmalar burada -->
+<div id="settings" class="overlay" hidden role="dialog" aria-label="Ayarlar">
+  <div class="ov-head">
+    <div class="brand">
+      <span class="logo">AYARLAR</span>
+      <span class="ver" id="ver">mobil</span>
+    </div>
+    <button class="link-pill" id="linkPill" title="Bağlantıyı yenile">
+      <i class="dot" id="linkDot"></i><span id="linkText">BAĞLANIYOR</span>
+    </button>
+    <button class="x big-x" id="settingsClose" aria-label="Kapat">×</button>
+  </div>
+  <div class="ov-body">
+
+    <div class="panel">
+      <div class="panel-h">GÖRÜNÜM</div>
+      <div class="seg" id="hudSeg">
+        <button data-hud="cekirdek">ÇEKİRDEK</button>
+        <button data-hud="halka">HALKA</button>
+      </div>
+      <label class="check"><input type="checkbox" id="lowPower"> Pil tasarrufu (30 FPS)</label>
+      <p class="muted small" id="hudInfo">Ana ekranda çift dokunarak da mod değişir.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">ÇALIŞMA MODU</div>
+      <div class="seg" id="modeSeg">
+        <button data-mode="auto">OTOMATİK</button>
+        <button data-mode="pc">PC</button>
+        <button data-mode="cloud">BULUT</button>
+      </div>
+      <p class="muted small">Otomatik: PC açıksa bilgisayardaki JARVIS'i kullanır, değilse buluta geçer.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">PC BAĞLANTISI</div>
+      <label>PC adresi<input id="pcUrl" placeholder="http://192.168.1.20:5000" inputmode="url"></label>
+      <label>Erişim anahtarı<input id="pcToken" placeholder="PC konsolunda yazan anahtar"></label>
+      <button class="wide" id="pcTest">BAĞLANTIYI TEST ET</button>
+      <p id="pcOut" class="mono out"></p>
+      <p class="muted small" id="mixedWarn" hidden>Bu sayfa https (GitHub Pages) üzerinden açık; tarayıcılar buradan evdeki http PC'ye bağlanmayı engelleyebilir. Çözüm: APK'yı kur ya da PC konsolundaki linki doğrudan aç.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">SİSTEM <button class="mini" id="sysRefresh">YENİLE</button></div>
+      <pre id="sysInfo" class="mono">PC bağlantısı gerekiyor.</pre>
+    </div>
+    <div class="panel">
+      <div class="panel-h">ARKA PLAN GÖREVLERİ <button class="mini" id="taskRefresh">YENİLE</button></div>
+      <div id="taskList" class="tasks"><p class="muted">PC bağlantısı gerekiyor.</p></div>
+    </div>
+
+    <div class="panel helmet">
+      <div class="panel-h">MARK KASK KONTROLÜ</div>
+      <div class="helmet-btns">
+        <button class="big danger" data-helmet="ac">KASK AÇ</button>
+        <button class="big cool" data-helmet="kapat">KASK KAPAT</button>
+      </div>
+      <button class="wide" data-helmet="durum">DURUM SORGULA</button>
+      <p id="helmetOut" class="mono out">—</p>
+      <label>ESP32 IP (PC yokken doğrudan)<input id="helmetIp" placeholder="192.168.1.42" inputmode="url"></label>
+      <p class="muted small">Önce PC üzerinden dener. PC'ye ulaşılamazsa ve ESP32 IP'si girildiyse doğrudan kaska gönderir.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">BULUT BEYNİ</div>
+      <div class="seg" id="provSeg">
+        <button data-prov="gemini">GEMINI</button>
+        <button data-prov="openai">OPENAI</button>
+        <button data-prov="anthropic">CLAUDE</button>
+      </div>
+      <label>API anahtarı<input id="apiKey" type="password" placeholder="Anahtar sadece bu telefonda saklanır"></label>
+      <label>Model<input id="model" list="modelList" placeholder="model adı"><datalist id="modelList"></datalist></label>
+      <div class="row2">
+        <label class="check"><input type="checkbox" id="webSearch"> Web araması</label>
+        <button class="mini" id="listModels">MODELLERİ GETİR</button>
+      </div>
+      <p class="muted small" id="provHint"></p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">SES</div>
+      <label class="check"><input type="checkbox" id="autoSpeak"> Cevapları sesli oku</label>
+      <label class="check"><input type="checkbox" id="pcVoice"> PC modunda JARVIS sesini (PC'nin ses motoru) kullan</label>
+      <label class="check"><input type="checkbox" id="handsFree"> Okuma bitince tekrar dinle (eller serbest)</label>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">SON KONUŞMALAR</div>
+      <div id="log" aria-live="off"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">TELEFON HAFIZASI <span class="muted small" id="memCount"></span></div>
+      <p class="muted small">Bulut modunda "hatırla …" ve "unut …" ile yönetilir. PC modunda PC'nin hafızası kullanılır.</p>
+      <ul id="memList" class="mem"></ul>
+      <div class="row2">
+        <button class="mini" id="exportData">YEDEK AL</button>
+        <button class="mini" id="importData">YEDEK YÜKLE</button>
+        <button class="mini warn" id="clearChat">SOHBETİ SİL</button>
+      </div>
+      <input type="file" id="importFile" accept="application/json" hidden>
+    </div>
+    <div class="panel" id="installPanel">
+      <div class="panel-h">UYGULAMA OLARAK KUR</div>
+      <p class="muted small" id="installInfo">JARVIS'i ana ekrana ekleyince tam ekran, uygulama gibi açılır ve internet yokken de açılır.</p>
+      <button class="wide" id="installBtn">ANA EKRANA EKLE</button>
+    </div>
+    <p class="muted small center">Dokun: konuş · Yukarı kaydır: yaz · Çift dokun: mod · Uzun bas: ayarlar</p>
+    <p class="muted small center" id="about"></p>
+  </div>
+</div>
+
+<div id="iosSheet" class="sheet" hidden>
+  <div class="sheet-card">
+    <div class="panel-h">iPHONE'A KURULUM</div>
+    <ol class="small">
+      <li>Safari'de alttaki <b>Paylaş</b> düğmesine dokun (kare ve yukarı ok).</li>
+      <li>Listeyi kaydırıp <b>Ana Ekrana Ekle</b>'yi seç.</li>
+      <li>Sağ üstte <b>Ekle</b>'ye dokun. JARVIS ikonu ana ekrana gelir.</li>
+    </ol>
+    <p class="muted small">Not: iPhone'da kurulum sadece Safari'den yapılabilir.</p>
+    <button class="wide" id="iosClose">TAMAM</button>
+  </div>
+</div>
+<script src="hud.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

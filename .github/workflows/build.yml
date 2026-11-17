@@ -1,0 +1,170 @@
+name: JARVIS Derleme
+
+# main'e her gönderimde APK + masaüstü paketi derlenir (Actions → Artifacts).
+# "v2.1.0" gibi bir etiket (tag) gönderilince GitHub Release oluşturulur:
+#   - JARVIS-<sürüm>.apk        → telefona kurulur
+#   - JARVIS_desktop.zip        → PC için tam paket (telefon arayüzü + Self-Heal motoru dahil)
+#   - manifest.json             → PC'deki JARVIS'in otomatik güncellemesi için
+# v2.1: Önce testler çalışır (masaüstü + Self-Heal motoru). Testler geçmezse paket ve Release oluşmaz.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Testler (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Masaüstü testleri (desktop/tests)
+        working-directory: desktop
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: Self-Heal motor testleri (tests/)
+        run: python -m unittest discover -s tests -t . -v
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Paketleri kur
+        run: npm install --no-audit --no-fund
+
+      - name: Android projesini oluştur
+        run: |
+          npx cap add android
+          node scripts/patch-android.mjs
+
+      - name: Uygulama ikonları
+        continue-on-error: true
+        run: npm run android:icons
+
+      - name: Web dosyalarını kopyala
+        run: npx cap sync android
+
+      - name: APK derle
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: APK'yı adlandır
+        id: name
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF" == refs/tags/v* ]] || VER="$(cat ../desktop/VERSION)-${GITHUB_SHA::7}"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "JARVIS-${VER}.apk"
+          echo "file=mobile/JARVIS-${VER}.apk" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-apk
+          path: ${{ steps.name.outputs.file }}
+
+  desktop:
+    name: Masaüstü paketi
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Paketle
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${TAG#v}"; else VER="$(cat desktop/VERSION)"; fi
+          rm -rf build && mkdir -p build/pkg
+          cp -r desktop/. build/pkg/
+          rm -rf build/pkg/data build/pkg/config_local.py
+          # v2.1: Self-Heal motoru pakette main.py ile aynı klasöre girer (hedefi kendini otomatik bulur).
+          # Kök tests/ (motor testleri) pakete girmez; pakette tests/ = masaüstü testleri.
+          cp -r selfheal build/pkg/selfheal
+          cp run.py selfheal_ayarlar.ornek.json BASLAT.bat DURUM.bat GERI_AL.bat KUR.bat ONERI_MODU.bat SADECE_MOTOR.bat build/pkg/
+          rm -rf build/pkg/selfheal_data build/pkg/selfheal_ayarlar.json
+          find build/pkg -name "__pycache__" -type d -prune -exec rm -rf {} +
+          mkdir -p build/pkg/phone_ui && cp -r mobile/www/. build/pkg/phone_ui/
+          echo "$VER" > build/pkg/VERSION
+          (cd build/pkg && zip -qr ../JARVIS_desktop.zip .)
+          SHA=$(sha256sum build/JARVIS_desktop.zip | cut -d' ' -f1)
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/JARVIS_desktop.zip"
+          printf '{"version":"%s","zip_url":"%s","sha256":"%s"}\n' "$VER" "$URL" "$SHA" > build/manifest.json
+          cat build/manifest.json
+
+      - name: Paketi doğrula (kurulu düzende testler + Self-Heal)
+        run: |
+          set -e
+          rm -rf build/check && mkdir -p build/check && cd build/check
+          unzip -q ../JARVIS_desktop.zip
+          test -f run.py && test -f selfheal/engine.py && test -f BASLAT.bat && test -f main.py
+          test ! -e data && test ! -e config_local.py
+          python -m unittest discover -s tests -t .
+          python -c "from pathlib import Path; from selfheal.config import default_target; assert default_target() == Path.cwd().resolve(), default_target()"
+          echo '{"data_dir": "/tmp/selfheal_ci", "mode": "gozlem", "check_ollama_health": false, "idle_test_generation": false}' > /tmp/ayar.json
+          python run.py --bir-kez --ayarlar /tmp/ayar.json
+          grep -q "test çalıştı, 0 başarısız" /tmp/selfheal_ci/RAPOR.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-desktop
+          path: |
+            build/JARVIS_desktop.zip
+            build/manifest.json
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [android, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: JARVIS ${{ github.ref_name }}
+          generate_release_notes: true
+          body: |
+            **Telefon:** `JARVIS-*.apk` dosyasını telefondan indirip kur (bilinmeyen kaynaklara izin ver).
+            **PC:** `JARVIS_desktop.zip` → `C:\JARVIS` içine çıkar (`data` klasörünün ve `config_local.py`'nin üzerine yazma).
+            PC'de `GITHUB_REPO` ayarlıysa JARVIS bu sürümü kendisi indirir.
+            **Kendini onarma:** `KUR.bat` (bir kez) → `BASLAT.bat` JARVIS'i Self-Heal motoruyla birlikte başlatır. Rapor: `DURUM.bat`.
+          files: |
+            out/*.apk
+            out/JARVIS_desktop.zip
+            out/manifest.json

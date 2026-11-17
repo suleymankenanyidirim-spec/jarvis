@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+desktop/data/
+desktop/config_local.py
+mobile/node_modules/
+mobile/android/
+*.apk
+build/
+
+# v2.1 — Self-Heal motorunun durum/yedek klasörü ve kişisel ayarı
+selfheal_data/
+selfheal_ayarlar.json

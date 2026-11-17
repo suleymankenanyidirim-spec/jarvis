@@ -1,0 +1,16 @@
+{
+  "appId": "com.jarvis.mobile",
+  "appName": "JARVIS",
+  "webDir": "www",
+  "backgroundColor": "#03070a",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "CapacitorHttp": { "enabled": true }
+  }
+}

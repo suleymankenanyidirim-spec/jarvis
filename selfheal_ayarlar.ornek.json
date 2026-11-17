@@ -1,0 +1,8 @@
+{
+  "mode": "otomatik",
+  "cycle_seconds": 300,
+  "max_attempts_per_issue": 3,
+  "idle_test_generation": true,
+  "llm_order": ["anthropic", "openai", "gemini", "ollama"],
+  "ollama_model": "qwen3:8b"
+}
