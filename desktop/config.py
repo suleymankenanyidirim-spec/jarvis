@@ -139,6 +139,12 @@ OLLAMA_MAX_CONCURRENT = 1           # aynı anda en fazla bu kadar model çağr�
 OLLAMA_LOCK_TIMEOUT = 300           # bu kadar saniyede sıra gelmezse "Model meşgul" hatası
 PHONE_STREAM_ENABLED = True         # POST /api/ask_stream (SSE); False -> 404
 
+# JARVIS v2.4 — Hafıza eşitleme (PC'deki SQLite tek doğru kaynak) + Türkçe hafıza araması
+MEMORY_STEMMING = True              # False: v2.3'teki gibi yalnızca alt-dizi eşlemesi
+HISTORY_DEFAULT_LIMIT = 50          # GET /api/history varsayılan mesaj sayısı
+HISTORY_MAX_LIMIT = 500             # GET /api/history üst sınırı
+SYNC_MAX_ITEMS = 500                # POST /api/memories toplu eşitlemede en fazla öğe
+
 # JARVIS v2.7 — Sade HUD (interface/gpu_hud.py)
 # Ekranda yalnızca seçili modun görseli, altta durum kelimesi ve kısa altyazı kalır.
 # True yaparsan eski paneli (hava durumu, harita, sensörler, sohbet kaydı…) geri açarsın:

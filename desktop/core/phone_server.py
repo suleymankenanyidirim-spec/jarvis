@@ -60,6 +60,13 @@ def phone_session(value):
     return value
 
 
+def _int(value):
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def sse_format(event):
     """Tek SSE olayı: `event: <type>` + `data: <JSON>` (Türkçe karakterler kaçışsız, satır sonu kaçışlı)."""
     return f"event: {event.get('type', 'message')}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -175,7 +182,7 @@ class PhoneServer:
             if _config("PHONE_ALLOW_CORS", True):
                 resp.headers["Access-Control-Allow-Origin"] = "*"
                 resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Jarvis-Token"
-                resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+                resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
                 # Chrome "Private Network Access": https sayfadan yerel ağa izin
                 resp.headers["Access-Control-Allow-Private-Network"] = "true"
             return resp
@@ -264,6 +271,78 @@ class PhoneServer:
             except Exception as exc:
                 print("[TELEFON] TTS hata:", exc)
                 return Response(status=204)
+
+        # --- v2.4: hafıza eşitleme (PC'deki SQLite tek doğru kaynak) ---
+        @app.route("/api/memories", methods=["GET", "POST", "DELETE"])
+        @app.route("/api/memories/<path:memory_id>", methods=["DELETE"])
+        def memories(memory_id=None):
+            if not self._authorized():
+                return self._deny()
+            mem = self.brain.memory
+            if request.method == "GET":
+                items = mem.list_memories()
+                return jsonify({"memories": items, "count": len(items)})
+            if request.method == "DELETE":
+                mid = _int(memory_id if memory_id is not None else request.args.get("id"))
+                if mid is None:
+                    return jsonify({"error": "Silinecek kaydın id'si gerekli."}), 400
+                return jsonify({"deleted": mem.delete_memory(mid), "id": mid})
+
+            body = request.get_json(silent=True) or {}
+            if "items" in body:
+                items = body.get("items")
+                if not isinstance(items, list):
+                    return jsonify({"error": "items bir liste olmalı."}), 400
+                limit = int(_config("SYNC_MAX_ITEMS", 500))
+                if len(items) > limit:
+                    return jsonify({"error": f"En fazla {limit} öğe gönderilebilir."}), 413
+                results = []
+                for item in items:
+                    item = item if isinstance(item, dict) else {}
+                    cid = item.get("client_id")
+                    try:
+                        res = mem.add_memory(item.get("content", ""), client_id=cid)
+                    except ValueError:
+                        res = {"status": "invalid", "id": None}
+                    results.append(dict(res, client_id=cid))
+                return jsonify({"results": results, "memories": mem.list_memories()})
+
+            content = str(body.get("content", "") or "").strip()
+            if "id" in body:
+                mid = _int(body.get("id"))
+                if mid is None:
+                    return jsonify({"error": "Geçersiz id."}), 400
+                if not content:
+                    return jsonify({"error": "Boş hafıza kaydı."}), 400
+                res = mem.update_memory(mid, content)
+                if res is None:
+                    return jsonify({"error": "Kayıt bulunamadı."}), 404
+                return jsonify(res)
+            if not content:
+                return jsonify({"error": "Boş hafıza kaydı."}), 400
+            return jsonify(mem.add_memory(content, client_id=body.get("client_id")))
+
+        @app.route("/api/history", methods=["GET", "POST"])
+        def history():
+            if not self._authorized():
+                return self._deny()
+            mem = self.brain.memory
+            if request.method == "GET":
+                session = phone_session(request.args.get("session"))
+                default = int(_config("HISTORY_DEFAULT_LIMIT", 50))
+                limit = _int(request.args.get("limit"))
+                limit = default if limit is None else limit
+                limit = max(1, min(limit, int(_config("HISTORY_MAX_LIMIT", 500))))
+                return jsonify({"session": session, "messages": mem.history(session, limit)})
+            body = request.get_json(silent=True) or {}
+            messages = body.get("messages")
+            if not isinstance(messages, list):
+                return jsonify({"error": "messages bir liste olmalı."}), 400
+            if len(messages) > int(_config("SYNC_MAX_ITEMS", 500)):
+                return jsonify({"error": "Çok fazla mesaj; parçalar halinde gönderin."}), 413
+            session = phone_session(body.get("session_id"))
+            result = mem.import_messages(session, messages, source="phone")
+            return jsonify(dict(result, session=session))
 
         @app.route("/api/tasks")
         def tasks():

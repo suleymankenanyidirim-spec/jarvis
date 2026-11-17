@@ -42,7 +42,9 @@ def creator_answer():
 class JarvisBrain:
     def __init__(self):
         # v2.2: config.MEMORY_DB artık gerçekten kullanılıyor (göreli yol main.py'nin klasörüne göre)
-        self.memory = MemoryStore(_cfg("MEMORY_DB", "data/jarvis_memory.db"))
+        # v2.4: MEMORY_STEMMING=False -> hafıza araması v2.3'teki gibi yalnızca alt-dizi eşlemesi
+        self.memory = MemoryStore(_cfg("MEMORY_DB", "data/jarvis_memory.db"),
+                                  stemming=_cfg("MEMORY_STEMMING", True))
         self.tools = ToolManager(self.memory)
         self.tasks = BackgroundTaskManager(
             max_workers=_cfg("BACKGROUND_MAX_WORKERS", 3),
