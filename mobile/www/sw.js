@@ -1,6 +1,6 @@
 // JARVIS PWA service worker — uygulama kabuğunu önbelleğe alır, çevrimdışı açılır.
 // Yeni sürüm yayınlarken sadece VERSION'u değiştir: telefonda "GÜNCELLE" bildirimi çıkar.
-const VERSION = "2.0.1";
+const VERSION = "2.1.0";
 const CACHE = "jarvis-shell-" + VERSION;
 const SHELL = ["./", "index.html", "style.css", "build-info.js", "backend.js", "stream.js", "sync.js", "updates.js",
   "tasknotify.js", "hud.js", "app.js", "manifest.webmanifest",

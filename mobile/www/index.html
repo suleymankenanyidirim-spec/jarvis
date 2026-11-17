@@ -164,6 +164,19 @@
       <input type="file" id="importFile" accept="application/json" hidden>
     </div>
 
+    <div class="panel" id="kbPanel">
+      <div class="panel-h">BİLGİ DEPOSU <button class="mini" id="kbRefresh">YENİLE</button></div>
+      <p class="muted small" id="kbStatus">JARVIS soruları önce PC'deki bilgi deposunda arar, orada yoksa internete bakar. PC bağlantısı gerekir.</p>
+      <label>Depoya not gönder<textarea id="kbText" rows="3" placeholder="Ör. Arabamın plakası 34 ABC 123. Sigorta Mart'ta bitiyor."></textarea></label>
+      <div class="row2">
+        <button class="mini" id="kbSave">NOTU KAYDET</button>
+        <button class="mini" id="kbUpload">DOSYA GÖNDER</button>
+      </div>
+      <input type="file" id="kbFile" accept=".txt,.md,.csv,.json,.html,.htm,.pdf" hidden>
+      <p id="kbOut" class="mono out"></p>
+      <ul id="kbList" class="mem"></ul>
+    </div>
+
     <div class="panel">
       <div class="panel-h">GÜNCELLEME</div>
       <p class="mono small" id="buildInfo">—</p>

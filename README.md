@@ -1,4 +1,4 @@
-# J.A.R.V.I.S. v2.7
+# J.A.R.V.I.S. v2.8
 
 Türkçe konuşan kişisel yapay zeka asistanı: Windows'ta çalışan masaüstü JARVIS (Ollama, HUD, ses, araçlar, Iron Man kaskı)
 ve ona bağlanan **telefon uygulaması**.
@@ -88,6 +88,25 @@ PC'ye ilk bağlantıda eşitlenir.
   Kaldırmak için `OTOMATIK_BASLAT_KALDIR.bat`.
 - Arka planda JARVIS çalışırken HUD'u açarsan telefon sunucusu HUD'da başlamaz (port dolu); telefon arka plandakine bağlanır.
 - `data/` yolları artık `main.py`'nin klasörüne göre çözülür; JARVIS hangi klasörden açılırsa açılsın aynı hafızayı kullanır.
+
+## Bilgi deposu (v2.8)
+JARVIS bir soru gelince **önce `D:\JARVIS_Bilgi` klasörüne** bakar, orada yoksa internete çıkar. Her şey PC'de kalır.
+- Klasöre `.txt .md .csv .json .html` (ve `.pdf`) dosyaları at; JARVIS değişiklikleri kendiliğinden görür.
+- Sohbette: **"depoya kaydet: Arabamın plakası 34 ABC 123"** → `notlar/` klasörüne yazılır.
+- Telefondan: uzun bas → AYAR → **BİLGİ DEPOSU** → not ya da dosya gönder (`telefon/` klasörüne düşer).
+- Masaüstü kısayolları: `MASAUSTU_KISAYOL.bat` ("JARVIS" ve "JARVIS Bilgi Deposu").
+- Ayarlar `config.py` → v2.8 bölümü (`KNOWLEDGE_DIR`, `KNOWLEDGE_WEB_FALLBACK` …).
+
+## Telefondan internet üzerinden (GitHub Pages + Tailscale https)
+iPhone dahil her telefonda, evde ya da dışarıda, https ile çalışır; port açılmaz, veri yalnızca senin cihazların
+arasında gider.
+1. **Tailscale HTTPS'i aç (bir kez):** https://login.tailscale.com/admin/dns → *HTTPS Certificates* → **Enable**.
+2. PC'de (yönetici gerekmez): `tailscale serve --bg 5000` → verdiği `https://<pc>.<tailnet>.ts.net` adresini
+   `config_local.py`'ye yaz: `TAILSCALE_HTTPS_URL = "https://…ts.net"` ve `GITHUB_REPO = "kullanici/jarvis"`.
+3. GitHub'da depo → Settings → Pages → Source: **GitHub Actions** (bir kez). Uygulama
+   `https://kullanici.github.io/jarvis/` adresinde yayınlanır.
+4. JARVIS'i yeniden başlat: QR kod ve `data/phone_link.txt` GitHub Pages linkini (eşleşme koduyla) gösterir.
+   Telefonda Tailscale açıkken linki aç → kendiliğinden eşleşir. Safari'de *Paylaş → Ana Ekrana Ekle*.
 
 ## Android imzalama (release APK)
 v2.5'ten itibaren APK, GitHub Secrets'taki **sabit bir keystore** ile imzalı release olarak derlenir. İmza hep
@@ -225,5 +244,5 @@ npm run serve                                # web sürümünü yerelde dene: ht
 Yerelde imza ortam değişkenleri yoksa debug APK derlenir. GitHub Actions'taki APK sabit anahtarla imzalı release'tir
 (yukarıda *Android imzalama (release APK)*).
 
-Sürüm geçmişi: `desktop/CHANGELOG_v2.7.md` … `desktop/CHANGELOG_v2.2.md`, `desktop/CHANGELOG_v2.1.md`,
+Sürüm geçmişi: `desktop/CHANGELOG_v2.8.md`, `desktop/CHANGELOG_v2.7.md` … `desktop/CHANGELOG_v2.2.md`, `desktop/CHANGELOG_v2.1.md`,
 `desktop/CHANGELOG_v1.4.md`, `desktop/CHANGELOG_v1.3.md`, `desktop/CHANGELOG_v1.2.md`.

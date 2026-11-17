@@ -214,7 +214,9 @@ TOOLS = [
     {"type":"function","function":{"name":"copy_selected_text","description":"Aktif pencerede seçili metni Ctrl+C ile panoya kopyala ve metni geri döndür. Kullanıcı açıkça seçili metni kopyalamanı istediğinde kullan.","parameters":{"type":"object","properties":{}}}},
     {"type":"function","function":{"name":"paste_clipboard","description":"Windows panosundaki içeriği aktif pencereye Ctrl+V ile yapıştır. Kullanıcı açıkça yapıştırmanı istediğinde kullan.","parameters":{"type":"object","properties":{"press_enter":{"type":"boolean","description":"Yapıştırmadan sonra Enter'a basılsın mı?"}}}}},
     {"type":"function","function":{"name":"paste_text","description":"Verilen metni panoya kopyala ve aktif pencereye Ctrl+V ile yapıştır. Kullanıcı açıkça bir metni bir uygulamaya yapıştırmanı istediğinde kullan.","parameters":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"press_enter":{"type":"boolean","description":"Yapıştırmadan sonra Enter'a basılsın mı?"}}}}},
-
+    # v2.8: bilgi deposu (D:/JARVIS_Bilgi)
+    {"type":"function","function":{"name":"knowledge_search","description":"Kullanıcının bilgisayarındaki bilgi deposunda (kendi notları ve dosyaları) ara. Kullanıcıya özel bilgiler için web'den önce bunu kullan.","parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string"}}}}},
+    {"type":"function","function":{"name":"knowledge_save","description":"Bir bilgiyi kullanıcının bilgi deposuna not olarak kaydet. Yalnızca kullanıcı açıkça depoya/kaydetmeye dediğinde kullan.","parameters":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"title":{"type":"string"}}}}},
 ]
 
 # v2.6: tüm araç adları ve telefondan varsayılan olarak kapalı olanlar (config.PHONE_ALLOWED_TOOLS bunların dışındakiler).
@@ -255,6 +257,14 @@ class ToolManager:
                 return "Hafıza kaydedildi." if self.memory.save_memory(args.get("memory", "")) else "Bu bilgi zaten hafızada."
             if name == "forget_memory":
                 return f"{self.memory.forget_memory(args.get('phrase', ''))} hafıza kaydı unutuldu."
+            if name in ("knowledge_search", "knowledge_save"):
+                kb = getattr(self, "knowledge", None)
+                if kb is None:
+                    return "Bilgi deposu kapalı (KNOWLEDGE_ENABLED)."
+                if name == "knowledge_save":
+                    return "Bilgi deposuna kaydedildi: " + kb.add_note(args.get("text", ""), args.get("title", ""))
+                hits = kb.search(args.get("query", ""))
+                return kb.context(hits) if hits else "BİLGİ_DEPOSUNDA_YOK: bu konuda kayıt bulunamadı."
             if name == "helmet_control":
                 action = args.get("action", "")
                 if action == "ac":

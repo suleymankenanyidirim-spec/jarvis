@@ -13,7 +13,7 @@
  */
 (() => {
 "use strict";
-const APP_VERSION = "2.0.1";
+const APP_VERSION = "2.1.0";
 const STORE_KEY = "jarvis.mobile.v1";
 const $ = (id) => document.getElementById(id);
 const BK = window.JarvisBackend;
@@ -916,6 +916,59 @@ async function helmet(action) {
   } catch (e) { out.textContent = "ESP32'ye ulaşılamadı: " + e.message; }
 }
 
+// ------------------------------------------------ v2.1: bilgi deposu (PC'de D:\JARVIS_Bilgi)
+const KB_MAX_MB = 10;
+async function kbRefresh() {
+  const list = $("kbList"), out = $("kbStatus");
+  if (backendCache.value !== "pc" || !activePc) { list.innerHTML = ""; out.textContent = "PC'ye bağlı değil; bilgi deposu PC'de durur."; return; }
+  try {
+    const d = await jsonOrThrow(await fetchT(activePc + "/api/knowledge", { headers: pcHeaders() }, 10000));
+    out.textContent = `${d.count} dosya · ${d.dir}. Dosyaları PC'de bu klasöre de atabilirsin.`;
+    list.innerHTML = (d.files || []).slice(0, 30).map((f) =>
+      `<li><span>${escapeHtml(f.path)}</span><i class="tag kb">${Math.max(1, Math.round(f.size / 1024))} KB</i></li>`).join("")
+      || '<li class="muted">Depo boş.</li>';
+  } catch (e) {
+    out.textContent = e && e.status === 404 ? "PC'deki JARVIS eski sürüm (bilgi deposu yok)." : "Depo okunamadı: " + e.message;
+  }
+}
+async function kbSend(body) {
+  const out = $("kbOut");
+  if ((await resolveBackend()) !== "pc") { out.textContent = "✗ PC'ye bağlı değil."; return false; }
+  out.textContent = "Gönderiliyor…";
+  try {
+    const d = await jsonOrThrow(await fetchT(activePc + "/api/knowledge", { method: "POST", headers: pcHeaders(true),
+      body: JSON.stringify(body) }, 60000));
+    out.textContent = "✓ Depoya kaydedildi: " + d.path;
+    kbRefresh();
+    return true;
+  } catch (e) { out.textContent = "✗ " + e.message; return false; }
+}
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = () => reject(r.error || new Error("dosya okunamadı"));
+    r.readAsDataURL(file);
+  });
+}
+function bindKnowledge() {
+  $("kbRefresh").onclick = kbRefresh;
+  $("kbSave").onclick = async () => {
+    const t = $("kbText").value.trim();
+    if (!t) return;
+    if (await kbSend({ text: t })) $("kbText").value = "";
+  };
+  $("kbUpload").onclick = () => $("kbFile").click();
+  $("kbFile").onchange = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    if (f.size > KB_MAX_MB * 1024 * 1024) { $("kbOut").textContent = `✗ Dosya ${KB_MAX_MB} MB'tan büyük.`; return; }
+    try { await kbSend({ filename: f.name, data: await fileToBase64(f) }); }
+    catch (err) { $("kbOut").textContent = "✗ " + err.message; }
+  };
+}
+
 // ------------------------------------------------ v1.9: PC ile eşleşme
 async function pairNow(code) {
   const out = $("pairOut");
@@ -1103,9 +1156,9 @@ function closeComposer() {
   c.classList.remove("open"); c.setAttribute("aria-hidden", "true"); $("input").blur();
 }
 const settingsOpen = () => !$("settings").hidden;
-const SECTION = { tasks: "taskList", helmet: "helmetOut", memory: "memPanel", settings: null, chat: "log" };
+const SECTION = { tasks: "taskList", helmet: "helmetOut", memory: "memPanel", knowledge: "kbPanel", settings: null, chat: "log" };
 function openSettings(view) {
-  closeComposer(); renderSettings(); refreshTasks();
+  closeComposer(); renderSettings(); refreshTasks(); kbRefresh();
   const o = $("settings"); o.hidden = false; requestAnimationFrame(() => o.classList.add("open"));
   const lg = $("log"); lg.scrollTop = lg.scrollHeight;
   const target = view && SECTION[view] && $(SECTION[view]);
@@ -1278,7 +1331,7 @@ async function readLink() {
 }
 
 async function init() {
-  bindUi(); bindSettings(); bindNotifications(); renderHistory();
+  bindUi(); bindSettings(); bindKnowledge(); bindNotifications(); renderHistory();
   setState("idle");
   const q = await readLink();
   if (q.get("view")) openSettings(q.get("view"));     // eski kısayollar (?view=settings/tasks/helmet) ayar katmanını açar

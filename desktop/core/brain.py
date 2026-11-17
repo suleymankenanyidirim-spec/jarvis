@@ -51,6 +51,92 @@ def filter_tools(allowed):
     return [t for t in TOOLS if t["function"]["name"] in allowed]
 
 
+# ---------------------------------------------------------------- v2.8: yerel modeli daha akıllı kullanma
+# Küçük model (qwen3:8b) her mesajda 24 araç tanımı görünce şaşırıyor. Mesajda belirli bir konu geçiyorsa
+# yalnızca o konunun araçları + temel araçlar gönderilir; hiçbir konu geçmiyorsa hepsi gönderilir.
+CORE_TOOLS = ("web_search", "save_memory", "forget_memory", "get_system_info", "get_jarvis_status",
+              "knowledge_search", "knowledge_save")
+TOOL_GROUPS = (
+    (r"\baç|\bkapat|başlat|çalıştır|uygulama|program|chrome|edge|spotify|discord|steam|notepad|"
+     r"hesap makinesi|klasör|dosya|link|site|url|youtube|vscode",
+     ("open_application", "close_application", "open_folder", "open_file", "open_url")),
+    (r"tarayıcı|browser|sayfa|siteye|sitesine|incele|web'?de|internette",
+     ("browser_search", "browser_visit", "open_url")),
+    (r"kopyala|yapıştır|pano", ("clipboard_copy", "clipboard_read", "copy_selected_text",
+                                "paste_clipboard", "paste_text")),
+    (r"kask|helmet|maske", ("helmet_control",)),
+    (r"görev|arka plan|araştır|rapor|planla|uzun süre",
+     ("run_background_task", "list_background_tasks", "get_background_task", "start_planned_task")),
+    (r"konsey|uzman|danış", ("council_consult",)),
+    (r"güncelle", ("stage_self_update",)),
+)
+_THINK_RE = re.compile(r"\bneden\b|\bniçin\b|\bniye\b|\bnasıl\b|açıkla|karşılaştır|hesapla|analiz|\bkod|program|"
+                       r"\bhata|\bfark|\bplan|öner|strateji|mantık|ispat|çöz|\d+\s*[-+*/x×]\s*\d+")
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>\s*", re.S)
+
+
+def _fold(text):
+    return str(text or "").replace("I", "ı").replace("İ", "i").lower()
+
+
+def select_tools(text):
+    """Mesajın konusuna göre gönderilecek araçlar; belirli bir konu yoksa None (hepsi)."""
+    if not _cfg("OLLAMA_TOOL_SELECTION", True):
+        return None
+    low = _fold(text)
+    picked = set()
+    for pattern, names in TOOL_GROUPS:
+        if re.search(pattern, low):
+            picked.update(names)
+    if not picked:
+        return None
+    return frozenset(picked | set(CORE_TOOLS))
+
+
+def combine_tools(selected, allowed):
+    if selected is None:
+        return allowed
+    if allowed is None:
+        return selected
+    return frozenset(selected) & frozenset(allowed)
+
+
+def wants_thinking(text, source="hud"):
+    """OLLAMA_THINK: True / False / "auto". auto: uzun ya da akıl yürütme isteyen soru ve arka plan görevleri."""
+    mode = _cfg("OLLAMA_THINK", "auto")
+    if isinstance(mode, bool):
+        return mode
+    if str(mode).lower() != "auto":
+        return str(mode).lower() in ("1", "true", "evet", "on")
+    if source == "task":
+        return True
+    return len(str(text or "")) > 160 or bool(_THINK_RE.search(_fold(text)))
+
+
+def strip_think(text):
+    """Eski Ollama sürümleri düşünme metnini <think>…</think> olarak cevaba koyar; atılır."""
+    text = _THINK_TAG_RE.sub("", str(text or ""))
+    if "<think>" in text:              # kapanmamış etiket
+        text = text.split("<think>")[0]
+    return text.strip()
+
+
+def model_options():
+    opts = {}
+    ctx = _cfg("OLLAMA_NUM_CTX", 8192)
+    if ctx:
+        opts["num_ctx"] = int(ctx)
+    temp = _cfg("OLLAMA_TEMPERATURE", 0.4)
+    if temp is not None:
+        opts["temperature"] = float(temp)
+    return opts
+
+
+_KB_SAVE_RE = re.compile(r"^(?:bunu\s+)?(?:bilgi\s+)?depo(?:ya|ma)\s+(?:kaydet|ekle|yaz)\s*[:,-]?\s*(.+)$", re.S | re.I)
+_QUESTION_RE = re.compile(r"\?\s*$|\b(nedir|kimdir|ne zaman|nerede|nereden|kaç|hangi|ne kadar|nasıl|neden|niçin|"
+                          r"kim|ne demek|anlamı|tarihi|fiyatı|hakkında|bilgi ver|anlat)\b")
+
+
 def creator_answer():
     return _cfg("CREATOR_ANSWER",
                 "Slov Studio — Made in Türkiye. Süleyman Kenan Yıldırım tarafından yapılmıştır.")
@@ -71,6 +157,10 @@ class JarvisBrain:
         self.council = AICouncil(self._local_chat_text)
         self.planner = TaskPlanner(self._local_chat_text, max_steps=_cfg("PLANNER_MAX_STEPS", 7))
         self._init_ollama_lock()
+        # v2.8: bilgi deposu (D:/JARVIS_Bilgi). Soru önce burada aranır, yoksa internete bakılır.
+        from core.knowledge import from_config
+        self.knowledge = from_config(_cfg)
+        self.tools.knowledge = self.knowledge
         self.tools.background_runner = self.run_background
         self.tools.planned_runner = self.start_planned_task
         self.tools.task_lister = self.task_status
@@ -100,27 +190,34 @@ class JarvisBrain:
 
     # ------------------------------------------------------------ model çağrıları
     @staticmethod
-    def _payload(messages, stream, allowed_tools=None):
-        return {
+    def _payload(messages, stream, allowed_tools=None, think=False):
+        payload = {
             "model": MODEL,
             "messages": messages,
             "tools": filter_tools(allowed_tools),   # v2.6: telefonda yalnızca izinli araçların tanımı
             "stream": stream,
-            "think": False,
+            "think": bool(think),                   # v2.8: OLLAMA_THINK (auto: zor sorularda düşünür)
             "keep_alive": "10m",
         }
+        opts = model_options()                      # v2.8: bağlam penceresi + sıcaklık
+        if opts:
+            payload["options"] = opts
+        return payload
 
-    def _chat(self, messages, allowed_tools=None):
+    def _chat(self, messages, allowed_tools=None, think=False):
         """Tek seferlik model çağrısı. Kilit yalnızca çağrı süresince tutulur."""
         self._wait_slot()
         try:
-            r = requests.post(OLLAMA_URL, json=self._payload(messages, False, allowed_tools), timeout=180)
+            r = requests.post(OLLAMA_URL, json=self._payload(messages, False, allowed_tools, think), timeout=300)
             r.raise_for_status()
-            return r.json().get("message", {})
+            message = r.json().get("message", {})
+            if message.get("content"):
+                message["content"] = strip_think(message["content"])
+            return message
         finally:
             self._release_slot()
 
-    def _chat_stream(self, messages, allowed_tools=None):
+    def _chat_stream(self, messages, allowed_tools=None, think=False):
         """Akışlı model çağrısı. Olaylar: ("wait", None), ("token", metin), ("message", son mesaj).
 
         Üreteç yarıda kapatılsa da (telefon bağlantıyı kopardı) bağlantı kapanır ve kilit bırakılır.
@@ -130,10 +227,11 @@ class JarvisBrain:
             self._wait_slot()
         resp = None
         try:
-            resp = requests.post(OLLAMA_URL, json=self._payload(messages, True, allowed_tools),
-                                 timeout=180, stream=True)
+            resp = requests.post(OLLAMA_URL, json=self._payload(messages, True, allowed_tools, think),
+                                 timeout=300, stream=True)
             resp.raise_for_status()
             content, tool_calls = [], []
+            in_think = False
             for raw in resp.iter_lines():
                 if not raw:
                     continue
@@ -144,11 +242,20 @@ class JarvisBrain:
                 piece = msg.get("content") or ""
                 if piece:
                     content.append(piece)
-                    yield ("token", piece)
+                    # Eski Ollama: düşünme metni <think>…</think> içinde gelir; telefona gönderilmez.
+                    if "<think>" in piece:
+                        in_think = True
+                    visible = piece
+                    if in_think:
+                        visible = piece.split("</think>", 1)[1] if "</think>" in piece else ""
+                        if "</think>" in piece:
+                            in_think = False
+                    if visible:
+                        yield ("token", visible)
                 tool_calls.extend(msg.get("tool_calls") or [])
                 if data.get("done"):
                     break
-            final = {"role": "assistant", "content": "".join(content)}
+            final = {"role": "assistant", "content": strip_think("".join(content))}
             if tool_calls:
                 final["tool_calls"] = tool_calls
             yield ("message", final)
@@ -214,6 +321,9 @@ class JarvisBrain:
         self.memory.save_message("user", text, session_id, source)
         if is_creator_question(text):
             return creator_answer(), None
+        saved = self._knowledge_command(text, source)
+        if saved:
+            return saved, None
         if allow_planning and _cfg("AUTO_PLANNER", True) and self._looks_like_long_task(text):
             return self.start_planned_task("Otomatik görev: " + text[:70], text), None
         return None, [
@@ -221,6 +331,46 @@ class JarvisBrain:
             {"role": "system", "content": self._context(text, session_id)},
             {"role": "user", "content": text},
         ]
+
+    # ------------------------------------------------------------ bilgi deposu (v2.8)
+    def _knowledge_command(self, text, source):
+        """"depoya kaydet: …" modele gitmeden depoya not olarak yazılır (küçük model bunu kaçırmasın)."""
+        kb = getattr(self, "knowledge", None)
+        m = _KB_SAVE_RE.match(str(text or "").strip())
+        if kb is None or not m:
+            return None
+        try:
+            rel = kb.add_note(m.group(1).strip(), source="telefon" if source == "phone" else "sohbet")
+            return f"Bilgi deposuna kaydettim ({rel})."
+        except Exception as exc:
+            return f"Bilgi deposuna kaydedemedim: {exc}"
+
+    def _research(self, text, messages):
+        """Önce bilgi deposu; orada yoksa (ya da güncel bilgi isteniyorsa) internet.
+
+        Bulunanları modele sistem mesajı olarak ekler. Kullanılan aracın adlarını üretir (akış için).
+        """
+        kb = getattr(self, "knowledge", None)
+        hits = []
+        if kb is not None:
+            try:
+                hits = kb.search(text, limit=int(_cfg("KNOWLEDGE_MAX_HITS", 4)))
+            except Exception as exc:
+                print("[BİLGİ] Depo aranamadı:", exc)
+            if hits:
+                yield "knowledge_search"
+                messages.insert(len(messages) - 1, {"role": "system", "content":
+                                "BİLGİ DEPOSU (kullanıcının kendi dosyaları) — soruyu önce buna göre cevapla, "
+                                "cevapta 'bilgi deposuna göre' de; depoda yoksa uydurma:\n" + kb.context(hits)})
+        web = self.tools.web.should_search(text)
+        if (not web and kb is not None and not hits and _cfg("KNOWLEDGE_WEB_FALLBACK", True)
+                and _QUESTION_RE.search(_fold(text))):
+            web = True                     # depoda yok: internete bak
+        if web:
+            yield "web_search"
+            results, error = self.tools.web.search(text)
+            if not error and results:
+                messages.append({"role": "system", "content": "İLK WEB ARAŞTIRMASI:\n" + self.tools.web.context(results)})
 
     # ------------------------------------------------------------ araç kısıtı (v2.6)
     @staticmethod
@@ -265,14 +415,14 @@ class JarvisBrain:
             self.memory.save_message("assistant", ready, session_id, source)
             return ready
 
-        if self.tools.web.should_search(text):
-            results, error = self.tools.web.search(text)
-            if not error and results:
-                messages.append({"role": "system", "content": "İLK WEB ARAŞTIRMASI:\n" + self.tools.web.context(results)})
+        for _tool in self._research(text, messages):
+            pass
+        send = combine_tools(select_tools(text), allowed)   # v2.8: konuya göre araçlar (izin kısıtıyla)
+        think = wants_thinking(text, source)
 
         answer = ""
         for _ in range(8):
-            message = self._chat(messages, allowed)
+            message = self._chat(messages, send, think)
             messages.append(message)
             calls = self._calls(message)
             if not calls:
@@ -300,17 +450,16 @@ class JarvisBrain:
             yield {"type": "done", "reply": ready}
             return
 
-        if self.tools.web.should_search(text):
-            yield {"type": "tool", "name": "web_search", "text": "araç çalışıyor: web_search"}
-            results, error = self.tools.web.search(text)
-            if not error and results:
-                messages.append({"role": "system", "content": "İLK WEB ARAŞTIRMASI:\n" + self.tools.web.context(results)})
+        for tool in self._research(text, messages):
+            yield {"type": "tool", "name": tool, "text": f"araç çalışıyor: {tool}"}
+        send = combine_tools(select_tools(text), allowed)
+        think = wants_thinking(text, source)
 
         answer = ""
         waited = False
         for _ in range(8):
             message = {}
-            for kind, value in self._chat_stream(messages, allowed):
+            for kind, value in self._chat_stream(messages, send, think):
                 if kind == "wait":
                     if not waited:
                         waited = True

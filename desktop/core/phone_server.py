@@ -231,12 +231,25 @@ class PhoneServer:
         self.pairing = PairingCodes(ttl=_config("PHONE_PAIR_CODE_TTL", 300),
                                     max_failures=_config("PHONE_PAIR_MAX_FAILURES", 5))
         self.app = Flask("jarvis_phone")
+        # v2.8: telefondan dosya gönderimi (base64 ~%35 büyütür) için üst sınır
+        upload_mb = float(_config("KNOWLEDGE_MAX_UPLOAD_MB", 10) or 10)
+        self.app.config["MAX_CONTENT_LENGTH"] = int((upload_mb * 1.4 + 1) * 1024 * 1024)
         self._routes()
 
     # ------------------------------------------------------------- helpers
     @staticmethod
     def _client():
-        return request.remote_addr or "?"
+        """İsteği gönderen IP. v2.8: `tailscale serve` (https) arkasında istekler 127.0.0.1'den gelir;
+        o zaman gerçek istemci X-Forwarded-For'dan okunur. Böylece telefon "PC'nin kendisi" sayılmaz
+        (yeni eşleşme kodu isteyemez) ve deneme sınırı her cihaz için ayrı işler."""
+        ip = request.remote_addr or "?"
+        if ip in LOCAL_ADDRS and _config("PHONE_TRUST_LOCAL_PROXY", True):
+            fwd = request.headers.get("X-Forwarded-For", "")
+            if fwd.strip():
+                return fwd.split(",")[0].strip() or "proxy"
+            if request.headers.get("Tailscale-User-Login"):
+                return "tailscale-proxy"
+        return ip
 
     def _authorized(self):
         """v2.6: anahtar yalnızca X-Jarvis-Token başlığında. Hatalı anahtar IP başına sayılır;
@@ -275,7 +288,7 @@ class PhoneServer:
         """Yeni eşleşme kodu üretir, link dosyasını yeni kodla günceller ve kodu döndürür."""
         code = self.pairing.new()
         links = build_links(self.links.get("lan_ip", ""), self.links.get("ts_ip", ""), self.port, code)
-        write_link_file(link_report(links, code))
+        write_link_file(link_report(links, code) + remote_report(code))
         print(f"[TELEFON] Yeni eşleşme kodu: {format_pair_code(code)} "
               f"({int(self.pairing.ttl // 60)} dakika geçerli, tek kullanımlık)")
         return code
@@ -499,6 +512,42 @@ class PhoneServer:
             return jsonify({"error": "GET /api/tts kaldırıldı (v2.6). POST {\"text\"} kullanın; "
                                      "telefon uygulamasını v1.9 ya da üstüne güncelleyin."}), 405
 
+        # --- v2.8: bilgi deposu (D:/JARVIS_Bilgi) ---
+        @app.route("/api/knowledge", methods=["GET", "POST"])
+        def knowledge():
+            if not self._authorized():
+                return self._deny()
+            kb = getattr(self.brain, "knowledge", None)
+            if kb is None:
+                return jsonify({"error": "Bilgi deposu kapalı (KNOWLEDGE_ENABLED)."}), 503
+            if request.method == "GET":
+                q = str(request.args.get("q", "") or "").strip()
+                if q:
+                    return jsonify({"query": q, "results": kb.search(q, limit=8)})
+                files = kb.list_files()
+                return jsonify({"dir": str(kb.root), "files": files, "count": len(files)})
+            body = request.get_json(silent=True) or {}
+            try:
+                if body.get("data"):
+                    try:
+                        data = base64.b64decode(str(body["data"]), validate=True)
+                    except (ValueError, TypeError):
+                        return jsonify({"error": "Dosya verisi bozuk (base64)."}), 400
+                    if len(data) > float(_config("KNOWLEDGE_MAX_UPLOAD_MB", 10)) * 1024 * 1024:
+                        return jsonify({"error": "Dosya çok büyük."}), 413
+                    rel = kb.save_upload(body.get("filename", ""), data)
+                else:
+                    text = str(body.get("text", "") or "").strip()
+                    if not text:
+                        return jsonify({"error": "Boş not."}), 400
+                    rel = kb.add_note(text, body.get("title", ""), source="telefon")
+            except OverflowError:
+                return jsonify({"error": "Dosya çok büyük."}), 413
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            print(f"[BİLGİ] Telefondan depoya eklendi: {rel}")
+            return jsonify({"saved": True, "path": rel})
+
         # --- v2.4: hafıza eşitleme (PC'deki SQLite tek doğru kaynak) ---
         @app.route("/api/memories", methods=["GET", "POST", "DELETE"])
         @app.route("/api/memories/<path:memory_id>", methods=["DELETE"])
@@ -691,6 +740,21 @@ def link_report(links, pair_code):
     return "\n".join(lines) + "\n"
 
 
+def remote_report(pair_code):
+    """v2.8: internetten bağlantı satırları (Tailscale https + GitHub Pages). Ayarlı değilse ''."""
+    https = str(_config("TAILSCALE_HTTPS_URL", "") or "").strip().rstrip("/")
+    if not https:
+        return ""
+    lines = ["", f"İnternetten (Tailscale https) PC adresi: {https}"]
+    repo = str(_config("GITHUB_REPO", "") or "").strip()
+    if "/" in repo:
+        user, name = repo.split("/", 1)
+        pages = f"https://{user.strip().lower()}.github.io/{name.strip()}/"
+        lines.append("Telefonda (GitHub Pages) aç: "
+                     f"{pages}?pair={quote(str(pair_code), safe='')}&pcs={quote(https, safe='')}")
+    return "\n".join(lines) + "\n"
+
+
 def write_link_file(text):
     try:
         LINK_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -740,7 +804,12 @@ def start_phone_server(brain, port=5000):
     print(f"[TELEFON] Eşleşme kodu        : {format_pair_code(code)} "
           f"({int(server.pairing.ttl // 60)} dk geçerli, tek kullanımlık; yenisi: TELEFON_ESLESTIR.bat)")
     print("[TELEFON] Erişim anahtarını elle girmek için: data\\phone_token.txt")
-    write_link_file(report)
-    _print_qr(links["tailscale"] or links["lan"])
+    remote = remote_report(code)
+    pages_link = next((ln.split(": ", 1)[1] for ln in remote.splitlines() if ln.startswith("Telefonda (GitHub Pages)")), "")
+    if pages_link:
+        print("[TELEFON] İnternetten (GitHub Pages):", pages_link)
+    write_link_file(report + remote)
+    # QR: internet linki varsa o (her yerden çalışır), yoksa Tailscale, yoksa ev WiFi linki
+    _print_qr(pages_link or links["tailscale"] or links["lan"])
     threading.Thread(target=server.run, daemon=True).start()
     return server

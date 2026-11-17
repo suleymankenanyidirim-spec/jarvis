@@ -14,14 +14,15 @@
   const DEFAULT_PORT = 5000;
   const LIMITED_TEXT = "PC'ye ulaşılamıyor, sınırlı mod";
 
-  /** "192.168.1.20" -> "http://192.168.1.20:5000" ; sondaki / atılır. */
+  /** "192.168.1.20" -> "http://192.168.1.20:5000" ; sondaki / atılır.
+   *  v2.1: https adresleri (ör. Tailscale serve: https://pc.tailnet.ts.net) 443'te kalır, :5000 eklenmez. */
   function normalizeUrl(value) {
     let v = String(value || "").trim();
     if (!v) return "";
     if (!/^https?:\/\//i.test(v)) v = "http://" + v;
     v = v.replace(/\/+$/, "");
     const hostPart = v.replace(/^https?:\/\//i, "");
-    if (!/:\d+(\/|$)/.test(hostPart)) v += ":" + DEFAULT_PORT;
+    if (!/:\d+(\/|$)/.test(hostPart) && !/^https:/i.test(v)) v += ":" + DEFAULT_PORT;
     return v;
   }
 

@@ -139,3 +139,4 @@ label textarea:focus{border-color:var(--cyan)}
 .mem li button.edit{color:var(--soft)}
 .msg .cursor{display:inline-block;width:7px;height:1em;margin-left:2px;vertical-align:-2px;background:var(--cyan);animation:blink 1s infinite}
 .memedit{width:100%;background:#000;color:#fff;border:1px solid var(--cyan);border-radius:6px;padding:6px 8px;font:inherit;font-size:13px;outline:none}
+.mem li .tag.kb{color:var(--muted);border-color:var(--line2)}
