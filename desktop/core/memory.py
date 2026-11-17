@@ -4,11 +4,14 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.paths import resolve
+
 TOKEN_RE = re.compile(r"[^\W\d_]+|[\w]+", re.UNICODE)
 
 class MemoryStore:
     def __init__(self, db_path="data/jarvis_memory.db"):
-        self.db_path = Path(db_path)
+        # v2.2: göreli yollar main.py'nin klasörüne göre çözülür (cwd'ye göre değil)
+        self.db_path = resolve(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 

@@ -27,14 +27,20 @@ def is_creator_question(text):
     return bool(_CREATOR_RE.search(low) and _SELF_RE.search(low))
 
 
-def creator_answer():
+def _cfg(name, default=None):
     import config
-    return getattr(config, "CREATOR_ANSWER",
-                   "Slov Studio — Made in Türkiye. Süleyman Kenan Yıldırım tarafından yapılmıştır.")
+    return getattr(config, name, default)
+
+
+def creator_answer():
+    return _cfg("CREATOR_ANSWER",
+                "Slov Studio — Made in Türkiye. Süleyman Kenan Yıldırım tarafından yapılmıştır.")
+
 
 class JarvisBrain:
     def __init__(self):
-        self.memory = MemoryStore()
+        # v2.2: config.MEMORY_DB artık gerçekten kullanılıyor (göreli yol main.py'nin klasörüne göre)
+        self.memory = MemoryStore(_cfg("MEMORY_DB", "data/jarvis_memory.db"))
         self.tools = ToolManager(self.memory)
         self.tasks = BackgroundTaskManager(
             max_workers=getattr(__import__('config'), 'BACKGROUND_MAX_WORKERS', 3),

@@ -59,6 +59,30 @@ arka plan görevlerini ve PC sistem durumunu izleme, kask aç/kapat (PC yoksa do
 
 > Windows Güvenlik Duvarı ilk açılışta Python için izin sorarsa **Özel ağlar**'a izin ver; yoksa telefon PC'ye ulaşamaz.
 
+## Ev dışından bağlantı (Tailscale)
+Telefon evden çıkınca da PC'deki JARVIS'e (aynı beyin, hafıza, araçlar) bağlanır. Tailscale ücretsizdir, port
+açmak gerekmez; trafik yalnızca senin cihazların arasında şifreli gider.
+
+1. PC'ye Tailscale'i kur (https://tailscale.com/download) ve hesabınla giriş yap.
+2. Telefona Tailscale uygulamasını kur ve **aynı hesapla** giriş yap, bağlantıyı aç.
+3. JARVIS'i yeniden başlat. Konsolda ve `data/phone_link.txt` içinde iki link görünür: ev WiFi (LAN) ve
+   Tailscale (`http://100.x.y.z:5000/...`). Tailscale adresi bulunamazsa `config_local.py`'ye
+   `TAILSCALE_IP = "100.x.y.z"` yaz (`tailscale ip -4` komutu adresi gösterir).
+4. Telefonda linki bir kez aç (QR kod Tailscale linkini gösterir). Uygulama iki adresi de öğrenir:
+   evde LAN'ı, dışarıda Tailscale'i kullanır; üstte `PC BAĞLI · EV` / `PC BAĞLI · TAILSCALE` yazar.
+   Ya da AYAR → **PC adresleri** kutusuna her satıra bir adres yaz.
+5. PC'nin hep açık kalması için **arka plan modunu** kur: `KUR_OTOMATIK_BASLAT.bat`.
+
+PC'ye hiç ulaşılamazsa (otomatik modda) bulut devreye girer ve ekranda **"PC'ye ulaşılamıyor, sınırlı mod"** yazar.
+
+### Arka plan modu (`--headless`)
+- `py main.py --headless`: HUD açılmaz, pygame yüklenmez; yalnızca beyin + telefon sunucusu (+ güncelleme kontrolü)
+  çalışır. Çıktı `data/jarvis_headless.log` dosyasına da yazılır.
+- `KUR_OTOMATIK_BASLAT.bat`: Windows açılışında JARVIS'i pencere açmadan başlatır (yönetici izni gerekmez).
+  Kaldırmak için `OTOMATIK_BASLAT_KALDIR.bat`.
+- Arka planda JARVIS çalışırken HUD'u açarsan telefon sunucusu HUD'da başlamaz (port dolu); telefon arka plandakine bağlanır.
+- `data/` yolları artık `main.py`'nin klasörüne göre çözülür; JARVIS hangi klasörden açılırsa açılsın aynı hafızayı kullanır.
+
 ## Kendini onarma (Self-Heal, v2.1)
 
 Motor JARVIS'in yanında sürekli çalışır:
@@ -112,8 +136,10 @@ HUD, ses ve donanım kodu test edilemediği için motor oradaki hataları sadece
 ```
 cd desktop && py -m unittest discover -s tests -t .     # masaüstü testleri
 py -m unittest discover -s tests -t .                   # (kökte) motor + entegrasyon testleri
+cd mobile && node --test tests/*.test.js                # telefon uygulaması testleri
 ```
-GitHub'da her gönderimde Python 3.9 ve 3.12 ile çalışır; testler geçmezse paket/Release oluşmaz.
+GitHub'da her gönderimde Python 3.9 ve 3.12 ile çalışır (telefon sunucusu testleri için Flask kurulur);
+telefon testleri Node 22 ile çalışır. Testler geçmezse APK, paket ve Release oluşmaz.
 
 ## Bulut anahtarı
 - **Gemini** (önerilen, ücretsiz kota): https://aistudio.google.com → *Get API key*

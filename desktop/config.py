@@ -123,6 +123,13 @@ TTS_CACHE_MAX_FILES = 300
 TTS_CACHE_PHRASES = ["Efendim.", "Hemen bakıyorum.", "Tamamdır.", "Bir saniye efendim.",
                      "Anlaşıldı.", "Buyurun efendim."]
 
+# JARVIS v2.2 — Ev dışından bağlantı (Tailscale) + arka plan modu (main.py --headless)
+# Boşsa Tailscale adresi "tailscale ip -4" komutundan ya da ağ arayüzlerinden (100.x) bulunur.
+TAILSCALE_IP = ""
+TAILSCALE_DETECT = True
+# py main.py --headless çıktısı bu dosyaya da yazılır (pyw ile konsolsuz çalışırken de).
+HEADLESS_LOG_FILE = "data/jarvis_headless.log"
+
 # JARVIS v2.7 — Sade HUD (interface/gpu_hud.py)
 # Ekranda yalnızca seçili modun görseli, altta durum kelimesi ve kısa altyazı kalır.
 # True yaparsan eski paneli (hava durumu, harita, sensörler, sohbet kaydı…) geri açarsın:

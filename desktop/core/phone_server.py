@@ -12,15 +12,21 @@ config.PHONE_TOKEN'dan alınır; boşsa data/phone_token.txt içinde üretilir.
 """
 
 import hmac
+import ipaddress
 import secrets
 import socket
+import subprocess
 import threading
 from pathlib import Path
+from urllib.parse import quote
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-ROOT = Path(__file__).resolve().parents[1]
-TOKEN_FILE = ROOT / "data" / "phone_token.txt"
+from core.paths import BASE_DIR, data_path
+
+ROOT = BASE_DIR
+TOKEN_FILE = data_path("phone_token.txt")
+LINK_FILE = data_path("phone_link.txt")   # v2.2: LAN + Tailscale linkleri
 
 
 def _config(name, default=None):
@@ -71,6 +77,7 @@ class PhoneServer:
         self.port = port
         self.token = load_token()
         self.ui_dir = find_ui_dir()
+        self.links = {}
         self.app = Flask("jarvis_phone")
         self._routes()
 
@@ -252,6 +259,85 @@ class PhoneServer:
                      use_reloader=False, threaded=True)
 
 
+TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")   # Tailscale (CGNAT) adres aralığı
+
+
+def is_tailscale_ip(ip):
+    try:
+        addr = ipaddress.ip_address(str(ip).strip())
+    except ValueError:
+        return False
+    return addr.version == 4 and addr in TAILSCALE_NET
+
+
+def tailscale_ip():
+    """v2.2: PC'nin Tailscale (100.x) adresi. Sıra: TAILSCALE_IP ayarı -> `tailscale ip -4` -> ağ arayüzleri."""
+    manual = str(_config("TAILSCALE_IP", "") or "").strip()
+    if manual:
+        return manual
+    if not _config("TAILSCALE_DETECT", True):
+        return ""
+    try:
+        done = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=3,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        for line in (done.stdout or "").splitlines():
+            if is_tailscale_ip(line):
+                return line.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if is_tailscale_ip(ip):
+                return ip
+    except OSError:
+        pass
+    return ""
+
+
+def port_in_use(port, host="127.0.0.1"):
+    """Port başka bir süreçte (ör. arka planda --headless JARVIS) açık mı?"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        return s.connect_ex((host, int(port))) == 0
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def build_links(lan_ip, ts_ip, port, token):
+    """v2.2: ev WiFi (LAN) ve Tailscale linkleri; ikisi de pcs= ile tüm adresleri taşır."""
+    bases = [f"http://{ip}:{port}" for ip in (lan_ip, ts_ip) if ip]
+    secret = "token=" + quote(str(token), safe="")
+    pcs = "&pcs=" + quote(",".join(bases), safe="") if len(bases) > 1 else ""
+
+    def link(ip):
+        return f"http://{ip}:{port}/?{secret}{pcs}" if ip else ""
+    return {"bases": bases, "lan": link(lan_ip), "tailscale": link(ts_ip)}
+
+
+def link_report(links, token):
+    lines = [
+        "JARVIS telefon bağlantısı",
+        f"Ev WiFi (LAN) linki : {links.get('lan') or 'bulunamadı'}",
+        f"Tailscale linki     : {links.get('tailscale') or 'bulunamadı'}",
+        "Uygulamada PC adresleri (her satıra bir adres):",
+    ]
+    lines += ["  " + b for b in links.get("bases", [])]
+    lines.append(f"Erişim anahtarı     : {token}")
+    return "\n".join(lines) + "\n"
+
+
+def write_link_file(text):
+    try:
+        LINK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LINK_FILE.write_text(text, encoding="utf8")
+    except OSError:
+        pass
+
+
 def local_ip():
     """Bilgisayarın aynı ağdaki LAN IP'sini bulmaya çalışır (internete veri göndermez)."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -276,15 +362,20 @@ def _print_qr(url):
 
 
 def start_phone_server(brain, port=5000):
+    """Sunucuyu arka planda başlatır. Port doluysa (ör. --headless JARVIS çalışıyor) None döner."""
+    if port_in_use(port):
+        print(f"[TELEFON] {port} portu kullanımda (arka planda başka bir JARVIS çalışıyor olabilir); "
+              "telefon sunucusu başlatılmadı.")
+        return None
     server = PhoneServer(brain, port)
-    ip = local_ip()
-    link = f"http://{ip}:{port}/?token={server.token}"
-    print("[TELEFON] Aynı WiFi'deki telefondan aç:", link)
-    print(f"[TELEFON] Uygulamada PC adresi: http://{ip}:{port}   Anahtar: {server.token}")
-    try:
-        (ROOT / "data" / "phone_link.txt").write_text(link + "\n", encoding="utf8")
-    except OSError:
-        pass
-    _print_qr(link)
+    lan, ts = local_ip(), tailscale_ip()
+    links = build_links(lan, ts, port, server.token)
+    server.links = {"lan_ip": lan, "ts_ip": ts}
+    report = link_report(links, server.token)
+    print("[TELEFON] Ev WiFi linki       :", links["lan"])
+    print("[TELEFON] Tailscale linki     :", links["tailscale"] or "bulunamadı (Tailscale kurulu/açık değil)")
+    print("[TELEFON] Uygulamada PC adresleri:", ", ".join(links["bases"]))
+    write_link_file(report)
+    _print_qr(links["tailscale"] or links["lan"])
     threading.Thread(target=server.run, daemon=True).start()
     return server

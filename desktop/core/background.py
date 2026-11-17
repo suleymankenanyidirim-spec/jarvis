@@ -3,6 +3,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from core.paths import resolve
+except ImportError:   # dosya tek başına yüklenirse (Self-Heal testleri): aynı kural, main.py'nin klasörü
+    def resolve(path, base=None):
+        p = Path(path).expanduser()
+        return p if p.is_absolute() else Path(base or Path(__file__).resolve().parents[1]) / p
+
 
 class BackgroundTaskManager:
     """Persistent parallel task manager with retries, progress and recovery hooks."""
@@ -19,7 +26,7 @@ class BackgroundTaskManager:
         self.max_retries = int(max_retries)
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="jarvis-bg")
         self.lock = threading.RLock()
-        self.state_path = Path(state_path)
+        self.state_path = resolve(state_path)   # v2.2: main.py'nin klasörüne göre
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.tasks = self._load()
 

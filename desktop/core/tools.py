@@ -8,6 +8,7 @@ from core.web import WebResearcher
 from core.browser import BrowserAgent
 from core.helmet import HelmetController
 from core.updater import SelfUpdater
+from core.paths import data_path
 
 APP_ALIASES = {
     "chrome": "chrome.exe",
@@ -504,7 +505,7 @@ class ToolManager:
         }
         return {
             "background_tasks": bool(getattr(self, "background_runner", None)),
-            "persistent_task_history": Path("data/background_tasks.json").exists(),
+            "persistent_task_history": data_path("background_tasks.json").exists(),
             "ai_council": council,
             "council_providers": providers,
             "ollama": ollama,
