@@ -10,3 +10,9 @@ build/
 # v2.1 — Self-Heal motorunun durum/yedek klasörü ve kişisel ayarı
 selfheal_data/
 selfheal_ayarlar.json
+
+# v2.5 — Android imza anahtarı ve base64 hali asla depoya girmez (GitHub Secrets'ta durur)
+*.jks
+*.keystore
+*.p12
+*.b64

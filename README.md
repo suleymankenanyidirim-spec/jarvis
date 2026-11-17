@@ -83,6 +83,62 @@ PC'ye hiç ulaşılamazsa (otomatik modda) bulut devreye girer ve ekranda **"PC'
 - Arka planda JARVIS çalışırken HUD'u açarsan telefon sunucusu HUD'da başlamaz (port dolu); telefon arka plandakine bağlanır.
 - `data/` yolları artık `main.py`'nin klasörüne göre çözülür; JARVIS hangi klasörden açılırsa açılsın aynı hafızayı kullanır.
 
+## Android imzalama (release APK)
+v2.5'ten itibaren APK, GitHub Secrets'taki **sabit bir keystore** ile imzalı release olarak derlenir. İmza hep
+aynı olduğu için yeni APK eskisinin üzerine kurulur (veriler silinmez). Bir kerelik kurulum:
+
+### 1. Keystore üret (PC'de, bir kez)
+`keytool` Java ile gelir. Android Studio kuruluysa: `C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe`.
+```
+keytool -genkeypair -v -keystore jarvis-release.jks -storetype PKCS12 -alias jarvis -keyalg RSA -keysize 2048 -validity 10000
+```
+- Sorulan şifreyi (keystore şifresi) ve alias'ı (`jarvis`) bir yere yaz. **Bu dosyayı ve şifreyi kaybetme:**
+  kaybedersen sonraki APK eskisinin üzerine kurulmaz.
+- `jarvis-release.jks` dosyasını depoya koyma (`.gitignore` zaten `*.jks`, `*.keystore`, `*.p12`, `*.b64`'ü dışarıda tutar).
+
+### 2. Base64'e çevir (PowerShell)
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("jarvis-release.jks")) | Set-Content -NoNewline jarvis-release.b64
+```
+
+### 3. GitHub Secrets'a ekle
+Repo → **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret | Değer |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | `jarvis-release.b64` dosyasının içeriği (zorunlu) |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore şifresi (zorunlu) |
+| `ANDROID_KEY_ALIAS` | `jarvis` (zorunlu) |
+| `ANDROID_KEY_PASSWORD` | anahtar şifresi (isteğe bağlı; yoksa keystore şifresi kullanılır) |
+
+`gh` CLI ile:
+```
+gh secret set ANDROID_KEYSTORE_BASE64 < jarvis-release.b64
+gh secret set ANDROID_KEYSTORE_PASSWORD
+gh secret set ANDROID_KEY_ALIAS --body jarvis
+```
+Sonra `jarvis-release.b64`'ü sil (keystore'un yedeğini güvenli bir yerde tut).
+
+### 4. Derlemeyi kontrol et
+Actions → *JARVIS Derleme* → *Android APK (imzalı release)*. *İmzayı ve versionCode'u doğrula* adımı sertifikanın
+SHA-256 parmak izini ve APK'nın versionCode'unu yazar. Durursa:
+
+| Mesaj | Sebep / çözüm |
+|---|---|
+| `İmzalı APK için GitHub Secrets eksik: …` | Adı yazılan secret'ları ekle (adım 3). |
+| `ANDROID_KEYSTORE_BASE64 geçerli bir base64 metni değil` / `… keystore dosyasına benzemiyor` | Base64'ü adım 2'deki komutla dosyanın kendisinden yeniden üret. |
+| `ANDROID_KEYSTORE_PASSWORD yanlış` | Keystore şifresini kontrol et. |
+| `ANDROID_KEY_ALIAS ("…") keystore'da yok` | `keytool -list -keystore jarvis-release.jks` ile alias'a bak. |
+| `İmzasız APK` | `scripts/patch-android.mjs` build.gradle'a imza bloğunu ekleyemedi; derleme günlüğüne bak. |
+
+- **versionCode** her derlemede artar (`run_number + VERSION_CODE_OFFSET`); telefon güncelleme denetimi Release
+  notundaki `Android versionCode: N` satırını kullanır. `versionName` etiketten gelir (`v2.5.0` → `2.5.0`).
+
+### 5. Telefonda bir kerelik geçiş
+Eski (debug imzalı) uygulama yeni imzalı APK ile güncellenemez. Bir kez:
+AYAR → **YEDEK AL** → eski uygulamayı kaldır → yeni APK'yı kur → AYAR → **YEDEK YÜKLE**. Sonraki tüm APK'lar
+eskisinin üzerine kurulur.
+
 ## Kendini onarma (Self-Heal, v2.1)
 
 Motor JARVIS'in yanında sürekli çalışır:
@@ -155,6 +211,7 @@ npx cap add android && npm run android:sync
 cd android && ./gradlew assembleDebug        # Android Studio / SDK gerekir
 npm run serve                                # web sürümünü yerelde dene: http://localhost:8080
 ```
-APK hata ayıklama (debug) imzasıyla derlenir; kişisel kullanım için yeterli. Play Store için imzalı sürüm gerekir.
+Yerelde imza ortam değişkenleri yoksa debug APK derlenir. GitHub Actions'taki APK sabit anahtarla imzalı release'tir
+(yukarıda *Android imzalama (release APK)*).
 
 Sürüm geçmişi: `desktop/CHANGELOG_v2.1.md`, `desktop/CHANGELOG_v1.4.md`, `desktop/CHANGELOG_v1.3.md`, `desktop/CHANGELOG_v1.2.md`.

@@ -6,6 +6,9 @@ name: JARVIS Derleme
 #   - JARVIS_desktop.zip        → PC için tam paket (telefon arayüzü + Self-Heal motoru dahil)
 #   - manifest.json             → PC'deki JARVIS'in otomatik güncellemesi için
 # v2.1: Önce testler çalışır (masaüstü + Self-Heal motoru). Testler geçmezse paket ve Release oluşmaz.
+# v2.2: Telefon uygulaması testleri (node --test) de geçmeden APK ve paket oluşmaz.
+# v2.5: APK, GitHub Secrets'taki sabit keystore ile imzalı release olarak derlenir (README →
+#       "Android imzalama (release APK)"). versionCode her derlemede artar: run_number + VERSION_CODE_OFFSET.
 on:
   push:
     branches: [main]
@@ -14,6 +17,10 @@ on:
 
 permissions:
   contents: write
+
+env:
+  # Eski bir depodan taşındıysan ve telefondaki APK'nın versionCode'u daha büyükse burayı artır.
+  VERSION_CODE_OFFSET: "0"
 
 jobs:
   test:
@@ -41,7 +48,7 @@ jobs:
       - name: Self-Heal motor testleri (tests/)
         run: python -m unittest discover -s tests -t . -v
 
-  # v2.2: telefon uygulamasının saf mantık testleri (backend.js …). Geçmezse APK oluşmaz.
+  # v2.2: telefon uygulamasının saf mantık testleri (backend.js, stream.js, sync.js …). Geçmezse APK oluşmaz.
   mobile-test:
     name: Telefon uygulaması testleri
     runs-on: ubuntu-latest
@@ -55,13 +62,21 @@ jobs:
         with:
           node-version: 22
 
+      - uses: actions/setup-java@v4      # keytool: gerçek keystore doğrulama testi için
+        with:
+          distribution: temurin
+          java-version: 21
+
       - name: node --test
         run: node --test tests/*.test.js
 
   android:
-    name: Android APK
+    name: Android APK (imzalı release)
     needs: [mobile-test]
     runs-on: ubuntu-latest
+    outputs:
+      version_code: ${{ steps.version.outputs.code }}
+      version_name: ${{ steps.version.outputs.name }}
     defaults:
       run:
         working-directory: mobile
@@ -77,6 +92,16 @@ jobs:
           distribution: temurin
           java-version: 21
 
+      # Secret yoksa ya da yanlışsa Android SDK ve paket kurulumundan önce anlaşılır hatayla durur.
+      # Şifreler dosyaya ya da GITHUB_ENV'e yazılmaz; yalnızca keystore dosyasının yolu yazılır.
+      - name: İmza anahtarını denetle (GitHub Secrets)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: node scripts/ci-android.mjs signing
+
       - uses: android-actions/setup-android@v3
 
       - name: Paketleri kur
@@ -91,21 +116,46 @@ jobs:
         continue-on-error: true
         run: npm run android:icons
 
+      - name: Sürüm numarası + derleme bilgisi (www/build-info.js)
+        id: version
+        env:
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: node scripts/ci-android.mjs version
+
       - name: Web dosyalarını kopyala
         run: npx cap sync android
 
-      - name: APK derle
+      - name: Release APK derle (imzalı)
         working-directory: mobile/android
+        env:
+          JARVIS_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          JARVIS_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          JARVIS_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: İmzayı ve versionCode'u doğrula
+        run: |
+          set -e
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          if [ ! -f "$APK" ]; then
+            echo "::error title=İmzasız APK::app-release.apk oluşmadı (imzasız APK derlendi). İmza ayarlarını kontrol edin."
+            ls -la android/app/build/outputs/apk/release/ || true
+            exit 1
+          fi
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)"
+          "${BT}apksigner" verify --verbose --print-certs "$APK" | tee /tmp/apksigner.txt
+          grep -m1 "SHA-256 digest" /tmp/apksigner.txt | sed 's/^/İmza sertifikası /'
+          CODE="$("${BT}aapt2" dump badging "$APK" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)"
+          echo "APK versionCode: $CODE (beklenen ${{ steps.version.outputs.code }})"
+          [ "$CODE" = "${{ steps.version.outputs.code }}" ] || { echo "::error title=versionCode::APK versionCode $CODE, beklenen ${{ steps.version.outputs.code }}"; exit 1; }
 
       - name: APK'yı adlandır
         id: name
         run: |
-          VER="${GITHUB_REF_NAME#v}"
-          [[ "$GITHUB_REF" == refs/tags/v* ]] || VER="$(cat ../desktop/VERSION)-${GITHUB_SHA::7}"
-          cp android/app/build/outputs/apk/debug/app-debug.apk "JARVIS-${VER}.apk"
+          VER="${{ steps.version.outputs.name }}"
+          cp android/app/build/outputs/apk/release/app-release.apk "JARVIS-${VER}.apk"
           echo "file=mobile/JARVIS-${VER}.apk" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
@@ -149,6 +199,7 @@ jobs:
       - name: Paketi doğrula (kurulu düzende testler + Self-Heal)
         run: |
           set -e
+          python -m pip install flask
           rm -rf build/check && mkdir -p build/check && cd build/check
           unzip -q ../JARVIS_desktop.zip
           test -f run.py && test -f selfheal/engine.py && test -f BASLAT.bat && test -f main.py
@@ -183,9 +234,12 @@ jobs:
           generate_release_notes: true
           body: |
             **Telefon:** `JARVIS-*.apk` dosyasını telefondan indirip kur (bilinmeyen kaynaklara izin ver).
+            APK sabit anahtarla imzalıdır; v2.5'ten sonraki sürümler eskisinin üzerine kurulur.
             **PC:** `JARVIS_desktop.zip` → `C:\JARVIS` içine çıkar (`data` klasörünün ve `config_local.py`'nin üzerine yazma).
             PC'de `GITHUB_REPO` ayarlıysa JARVIS bu sürümü kendisi indirir.
             **Kendini onarma:** `KUR.bat` (bir kez) → `BASLAT.bat` JARVIS'i Self-Heal motoruyla birlikte başlatır. Rapor: `DURUM.bat`.
+
+            Android versionCode: ${{ needs.android.outputs.version_code }}
           files: |
             out/*.apk
             out/JARVIS_desktop.zip
