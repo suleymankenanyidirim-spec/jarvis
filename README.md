@@ -1,4 +1,4 @@
-# J.A.R.V.I.S. v2.1
+# J.A.R.V.I.S. v2.7
 
 Türkçe konuşan kişisel yapay zeka asistanı: Windows'ta çalışan masaüstü JARVIS (Ollama, HUD, ses, araçlar, Iron Man kaskı)
 ve ona bağlanan **telefon uygulaması**.
@@ -15,12 +15,13 @@ tests/     → Motorun kendi testleri
 
 | Mod | Ne zaman | Ne yapar |
 |---|---|---|
-| **PC** | Bilgisayarda JARVIS açık ve telefon aynı WiFi'de | PC'deki JARVIS'in beyni, hafızası, araçları, kask kontrolü, edge-tts sesi |
-| **Bulut** | PC kapalı / dışarıdasın | Gemini (ücretsiz anahtar), OpenAI ya da Claude ile sohbet + web araması |
-| **Otomatik** | Varsayılan | PC'ye ulaşabiliyorsa PC'yi, yoksa bulutu kullanır |
+| **PC** | Bilgisayarda JARVIS açık (ev WiFi'si ya da Tailscale ile her yerden) | PC'deki JARVIS'in beyni, hafızası, araçları, kask kontrolü, PC sesi; cevap akış halinde |
+| **Bulut** | PC'ye ulaşılamıyor | Gemini (ücretsiz anahtar), OpenAI ya da Claude ile sohbet + web araması (sınırlı mod) |
+| **Otomatik** | Varsayılan | PC adreslerinden birine ulaşabiliyorsa PC'yi, hiçbirine ulaşamazsa bulutu kullanır |
 
-Sesli konuşma (mikrofon), sesli cevap, eller serbest mod, telefon hafızası ("hatırla …", "unut …"),
-arka plan görevlerini ve PC sistem durumunu izleme, kask aç/kapat (PC yoksa doğrudan ESP32'ye).
+Sesli konuşma (mikrofon), cümle cümle sesli cevap, eller serbest mod, PC ile eşitlenen hafıza ("hatırla …", "unut …",
+AYAR → HAFIZA), arka plan görevlerini izleme ve bitince bildirim, kask aç/kapat (PC yoksa doğrudan ESP32'ye).
+Ana ekran sadedir: dokun = konuş, yukarı kaydır = yaz, çift dokun = mod, uzun bas = ayarlar.
 
 ## Kurulum (bir kerelik)
 
@@ -43,13 +44,16 @@ arka plan görevlerini ve PC sistem durumunu izleme, kask aç/kapat (PC yoksa do
 ### 4. PC tarafı
 1. Release'teki `JARVIS_desktop.zip`'i `C:\JARVIS`'e çıkar (eski `data` klasörünün üzerine yazma — hafızan orada).
 2. `INSTALL.bat` → `START_JARVIS.bat` (ya da kendini onarma ile: `KUR.bat` → `BASLAT.bat`, aşağıya bak).
-3. Konsolda şu satır çıkar:
+3. Konsolda (ve `data/phone_link.txt` içinde) şu satırlar çıkar:
    ```
-   [TELEFON] Aynı WiFi'deki telefondan aç: http://192.168.1.20:5000/?token=Ab3xYz...
-   [TELEFON] Uygulamada PC adresi: http://192.168.1.20:5000   Anahtar: Ab3xYz...
+   [TELEFON] Ev WiFi linki       : http://192.168.1.20:5000/?pair=ABCD2345&pcs=...
+   [TELEFON] Tailscale linki     : http://100.101.102.103:5000/?pair=ABCD2345&pcs=...
+   [TELEFON] Eşleşme kodu        : ABCD-2345 (5 dk geçerli, tek kullanımlık; yenisi: TELEFON_ESLESTIR.bat)
    ```
-   - Bu linki telefonda açarsan uygulama doğrudan PC'den açılır ve kendini ayarlar (QR kod da basılır).
-   - APK'da: **AYAR → PC adresi** ve **Erişim anahtarı** alanlarına bunları yaz → *Bağlantıyı test et*.
+   - Linki telefonda açarsan (QR kod da basılır) uygulama adresleri öğrenir ve kendiliğinden eşleşir.
+   - APK'da: uzun bas → AYAR → **Eşleşme kodu** kutusuna kodu yaz → **PC İLE EŞLEŞ**. Erişim anahtarı
+     kendiliğinden kaydedilir; anahtar artık linklere ve URL'lere yazılmaz (elle girmek için `data/phone_token.txt`).
+   - Kodun süresi geçtiyse PC'de `TELEFON_ESLESTIR.bat` yeni kod üretir.
 4. Otomatik güncelleme için `config_local.py` içine:
    ```python
    GITHUB_REPO = "kullanici-adin/jarvis"
@@ -73,7 +77,9 @@ açmak gerekmez; trafik yalnızca senin cihazların arasında şifreli gider.
    Ya da AYAR → **PC adresleri** kutusuna her satıra bir adres yaz.
 5. PC'nin hep açık kalması için **arka plan modunu** kur: `KUR_OTOMATIK_BASLAT.bat`.
 
-PC'ye hiç ulaşılamazsa (otomatik modda) bulut devreye girer ve ekranda **"PC'ye ulaşılamıyor, sınırlı mod"** yazar.
+PC'ye hiç ulaşılamazsa (otomatik modda) bulut devreye girer; durum kelimesinde kısa süre **SINIRLI MOD**, ayar
+katmanının üstünde **"PC'ye ulaşılamıyor, sınırlı mod"** yazar. Bulutta söylenen "hatırla …" ve konuşmalar
+PC'ye ilk bağlantıda eşitlenir.
 
 ### Arka plan modu (`--headless`)
 - `py main.py --headless`: HUD açılmaz, pygame yüklenmez; yalnızca beyin + telefon sunucusu (+ güncelleme kontrolü)
@@ -156,20 +162,25 @@ Motor JARVIS'in yanında sürekli çalışır:
 | Dosya | Ne yapar |
 |---|---|
 | `KUR.bat` | Bağımlılıkları kurar (bir kez) |
-| `BASLAT.bat` | JARVIS'i başlatır, çökerse yeniden başlatır, motor sürekli düzeltir (önerilen) |
+| `BASLAT.bat` | JARVIS'i başlatır, çökerse yeniden başlatır, motor sürekli tarar (önerilen) |
 | `ONERI_MODU.bat` | Düzeltmeleri üretir ve test eder ama **koda dokunmaz** (`selfheal_data\oneriler\`) |
 | `SADECE_MOTOR.bat` | Sadece motoru çalıştırır |
 | `DURUM.bat` | Raporu gösterir (`selfheal_data\RAPOR.md`) |
 | `GERI_AL.bat` | Son uygulanan değişikliği geri alır |
 
 ```
-py run.py --uygulama            # JARVIS + motor, otomatik mod
+py run.py --uygulama            # JARVIS + motor, selfheal_ayarlar.json'daki modla
 py run.py --mod gozlem          # sadece bul ve raporla
 py run.py --mod oneri           # düzelt + test et, ama uygulama
 py run.py --bir-kez             # tek tur
 py run.py uygula selfheal_data\oneriler\XXXX.json
 py run.py geri-al
 ```
+
+**Varsayılan mod `oneri`:** `KUR.bat` örnek ayarı (`selfheal_ayarlar.ornek.json`) `selfheal_ayarlar.json` olarak kopyalar;
+bu dosyada `"mode": "oneri"` yazar. Motor düzeltmeleri üretip test eder ama koda kendisi uygulamaz
+(`selfheal_data\oneriler\`, uygulamak için `py run.py uygula …`). Doğrulanan düzeltmelerin kendiliğinden
+uygulanmasını istersen `selfheal_ayarlar.json`'da `"mode": "otomatik"` yap.
 
 **Hedef klasör:** depoda `desktop/`, kurulu pakette (`C:\JARVIS`) klasörün kendisi — otomatik bulunur.
 Değiştirmek için `selfheal_ayarlar.json` içine `"target_dir": "D:\\Baska\\JARVIS"` yaz.
@@ -214,4 +225,5 @@ npm run serve                                # web sürümünü yerelde dene: ht
 Yerelde imza ortam değişkenleri yoksa debug APK derlenir. GitHub Actions'taki APK sabit anahtarla imzalı release'tir
 (yukarıda *Android imzalama (release APK)*).
 
-Sürüm geçmişi: `desktop/CHANGELOG_v2.1.md`, `desktop/CHANGELOG_v1.4.md`, `desktop/CHANGELOG_v1.3.md`, `desktop/CHANGELOG_v1.2.md`.
+Sürüm geçmişi: `desktop/CHANGELOG_v2.7.md` … `desktop/CHANGELOG_v2.2.md`, `desktop/CHANGELOG_v2.1.md`,
+`desktop/CHANGELOG_v1.4.md`, `desktop/CHANGELOG_v1.3.md`, `desktop/CHANGELOG_v1.2.md`.

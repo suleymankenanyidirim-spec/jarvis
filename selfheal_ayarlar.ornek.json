@@ -1,5 +1,5 @@
 {
-  "mode": "otomatik",
+  "mode": "oneri",
   "cycle_seconds": 300,
   "max_attempts_per_issue": 3,
   "idle_test_generation": true,
