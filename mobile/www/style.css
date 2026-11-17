@@ -121,3 +121,21 @@ label.check input{width:18px;height:18px;accent-color:var(--cyan)}
 .sheet-card ol{padding-left:20px;line-height:1.7;margin:6px 0 10px}
 .offline .dot{background:var(--warn)!important;color:var(--warn)!important}
 @media (prefers-reduced-motion: reduce){.sub,.overlay,#composer{transition:none}}
+
+/* ---------------------------------------------------------------- v2.0 + v1.5–v1.9 ayar katmanı parçaları */
+.strip{display:flex;align-items:center;gap:8px;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:13px}
+.strip[hidden]{display:none}
+.strip span{flex:1}
+.strip.update{border:1px solid var(--cyan);background:rgba(0,219,255,.08);color:var(--text)}
+.strip.limited{border:1px solid var(--warn);background:rgba(255,176,32,.08);color:var(--warn)}
+label textarea{display:block;width:100%;margin-top:5px;background:#000;color:#fff;border:1px solid var(--line2);border-radius:8px;
+  padding:10px;font:inherit;font-size:14px;outline:none;resize:vertical;min-height:44px}
+label textarea:focus{border-color:var(--cyan)}
+.memadd{gap:8px}
+.memadd input{flex:1;min-width:0;background:#000;color:#fff;border:1px solid var(--line2);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;outline:none}
+.memadd input:focus{border-color:var(--cyan)}
+.mem li span{flex:1;min-width:0;overflow-wrap:anywhere}
+.mem li .tag{flex:none;align-self:center;font-size:9px;letter-spacing:1px;color:var(--warn);border:1px solid var(--warn);border-radius:6px;padding:1px 5px}
+.mem li button.edit{color:var(--soft)}
+.msg .cursor{display:inline-block;width:7px;height:1em;margin-left:2px;vertical-align:-2px;background:var(--cyan);animation:blink 1s infinite}
+.memedit{width:100%;background:#000;color:#fff;border:1px solid var(--cyan);border-radius:6px;padding:6px 8px;font:inherit;font-size:13px;outline:none}

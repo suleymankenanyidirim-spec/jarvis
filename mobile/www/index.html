@@ -56,6 +56,14 @@
   </div>
   <div class="ov-body">
 
+    <!-- v1.8: yeni APK şeridi ve v1.5: sınırlı mod notu — ana ekran sade kalsın diye ayar katmanının içinde -->
+    <div id="updateBar" class="strip update" hidden>
+      <span id="updateText"></span>
+      <button class="mini" id="updateDownload">İNDİR</button>
+      <button class="x" id="updateClose" aria-label="Kapat">×</button>
+    </div>
+    <div id="limitedBar" class="strip limited" hidden></div>
+
     <div class="panel">
       <div class="panel-h">GÖRÜNÜM</div>
       <div class="seg" id="hudSeg">
@@ -73,13 +81,16 @@
         <button data-mode="pc">PC</button>
         <button data-mode="cloud">BULUT</button>
       </div>
-      <p class="muted small">Otomatik: PC açıksa bilgisayardaki JARVIS'i kullanır, değilse buluta geçer.</p>
+      <p class="muted small">Otomatik: PC adreslerinden birine ulaşılırsa bilgisayardaki JARVIS'i kullanır; hiçbirine ulaşılamazsa buluta geçer (sınırlı mod).</p>
     </div>
 
     <div class="panel">
       <div class="panel-h">PC BAĞLANTISI</div>
-      <label>PC adresi<input id="pcUrl" placeholder="http://192.168.1.20:5000" inputmode="url"></label>
-      <label>Erişim anahtarı<input id="pcToken" placeholder="PC konsolunda yazan anahtar"></label>
+      <label>Eşleşme kodu<input id="pairCode" placeholder="ABCD-EFGH (PC konsolunda / phone_link.txt'de)" autocapitalize="characters" autocomplete="off" spellcheck="false"></label>
+      <button class="wide" id="pairBtn">PC İLE EŞLEŞ</button>
+      <p id="pairOut" class="mono out"></p>
+      <label>PC adresleri (her satıra bir adres: ev WiFi, Tailscale…)<textarea id="pcUrls" rows="2" placeholder="http://192.168.1.20:5000&#10;http://100.101.102.103:5000" spellcheck="false"></textarea></label>
+      <label>Erişim anahtarı (eşleşince kendiliğinden dolar)<input id="pcToken" type="password" placeholder="PC'deki data/phone_token.txt" autocomplete="off"></label>
       <button class="wide" id="pcTest">BAĞLANTIYI TEST ET</button>
       <p id="pcOut" class="mono out"></p>
       <p class="muted small" id="mixedWarn" hidden>Bu sayfa https (GitHub Pages) üzerinden açık; tarayıcılar buradan evdeki http PC'ye bağlanmayı engelleyebilir. Çözüm: APK'yı kur ya da PC konsolundaki linki doğrudan aç.</p>
@@ -92,6 +103,8 @@
     <div class="panel">
       <div class="panel-h">ARKA PLAN GÖREVLERİ <button class="mini" id="taskRefresh">YENİLE</button></div>
       <div id="taskList" class="tasks"><p class="muted">PC bağlantısı gerekiyor.</p></div>
+      <label class="check"><input type="checkbox" id="taskNotify"> Arka plan görevi bitince bildirim gönder</label>
+      <p class="muted small">PC'ye bağlıyken görevler 20 saniyede bir yoklanır. Uygulama tamamen kapalıyken yoklanmaz; açılınca bildirilir.</p>
     </div>
 
     <div class="panel helmet">
@@ -126,6 +139,7 @@
       <div class="panel-h">SES</div>
       <label class="check"><input type="checkbox" id="autoSpeak"> Cevapları sesli oku</label>
       <label class="check"><input type="checkbox" id="pcVoice"> PC modunda JARVIS sesini (PC'nin ses motoru) kullan</label>
+      <label class="check"><input type="checkbox" id="stream"> PC cevabını akış halinde göster, cümle cümle oku</label>
       <label class="check"><input type="checkbox" id="handsFree"> Okuma bitince tekrar dinle (eller serbest)</label>
     </div>
 
@@ -134,9 +148,13 @@
       <div id="log" aria-live="off"></div>
     </div>
 
-    <div class="panel">
-      <div class="panel-h">TELEFON HAFIZASI <span class="muted small" id="memCount"></span></div>
-      <p class="muted small">Bulut modunda "hatırla …" ve "unut …" ile yönetilir. PC modunda PC'nin hafızası kullanılır.</p>
+    <div class="panel" id="memPanel">
+      <div class="panel-h">HAFIZA <span class="muted small" id="memCount"></span> <button class="mini" id="syncNow">EŞİTLE</button></div>
+      <p class="muted small" id="memStatus">PC'deki hafıza tek doğru kaynaktır.</p>
+      <div class="row2 memadd">
+        <input id="memInput" placeholder="Hatırlanacak bilgi…" autocomplete="off">
+        <button class="mini" id="memAdd">EKLE</button>
+      </div>
       <ul id="memList" class="mem"></ul>
       <div class="row2">
         <button class="mini" id="exportData">YEDEK AL</button>
@@ -144,6 +162,13 @@
         <button class="mini warn" id="clearChat">SOHBETİ SİL</button>
       </div>
       <input type="file" id="importFile" accept="application/json" hidden>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">GÜNCELLEME</div>
+      <p class="mono small" id="buildInfo">—</p>
+      <button class="wide" id="updateCheck">GÜNCELLEMELERİ DENETLE</button>
+      <p id="updateOut" class="mono out"></p>
     </div>
     <div class="panel" id="installPanel">
       <div class="panel-h">UYGULAMA OLARAK KUR</div>
@@ -167,6 +192,12 @@
     <button class="wide" id="iosClose">TAMAM</button>
   </div>
 </div>
+<script src="build-info.js"></script>
+<script src="backend.js"></script>
+<script src="stream.js"></script>
+<script src="sync.js"></script>
+<script src="updates.js"></script>
+<script src="tasknotify.js"></script>
 <script src="hud.js"></script>
 <script src="app.js"></script>
 </body>

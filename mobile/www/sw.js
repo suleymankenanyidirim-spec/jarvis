@@ -1,8 +1,9 @@
 // JARVIS PWA service worker — uygulama kabuğunu önbelleğe alır, çevrimdışı açılır.
 // Yeni sürüm yayınlarken sadece VERSION'u değiştir: telefonda "GÜNCELLE" bildirimi çıkar.
-const VERSION = "2.0.0";
+const VERSION = "2.0.1";
 const CACHE = "jarvis-shell-" + VERSION;
-const SHELL = ["./", "index.html", "style.css", "hud.js", "app.js", "manifest.webmanifest",
+const SHELL = ["./", "index.html", "style.css", "build-info.js", "backend.js", "stream.js", "sync.js", "updates.js",
+  "tasknotify.js", "hud.js", "app.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/icon-512-maskable.png", "icons/apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
