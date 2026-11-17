@@ -13,6 +13,7 @@ config.PHONE_TOKEN'dan alınır; boşsa data/phone_token.txt içinde üretilir.
 
 import hmac
 import ipaddress
+import json
 import secrets
 import socket
 import subprocess
@@ -20,7 +21,7 @@ import threading
 from pathlib import Path
 from urllib.parse import quote
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
 
 from core.paths import BASE_DIR, data_path
 
@@ -47,6 +48,21 @@ def load_token():
         TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
         TOKEN_FILE.write_text(token, encoding="utf8")
     return token
+
+
+def phone_session(value):
+    """v2.3: telefonun gönderdiği oturum kimliği. Geçersizse ya da task-… ise PHONE_SESSION_ID kullanılır."""
+    from core.memory import valid_session
+    default = str(_config("PHONE_SESSION_ID", "phone") or "phone")
+    value = str(value or "").strip()
+    if not value or not valid_session(value) or value.lower().startswith("task-"):
+        return default
+    return value
+
+
+def sse_format(event):
+    """Tek SSE olayı: `event: <type>` + `data: <JSON>` (Türkçe karakterler kaçışsız, satır sonu kaçışlı)."""
+    return f"event: {event.get('type', 'message')}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 def find_ui_dir():
@@ -88,6 +104,10 @@ class PhoneServer:
                  or (request.get_json(silent=True) or {}).get("token")
                  or "")
         return hmac.compare_digest(str(given).strip(), self.token)
+
+    @staticmethod
+    def _tagged(text):
+        return "[Telefondan] " + text if _config("PHONE_TAG_MESSAGES", False) else text
 
     def _deny(self):
         return jsonify({"error": "Yetkisiz. Telefon uygulamasına PC'deki erişim anahtarını gir."}), 401
@@ -193,14 +213,43 @@ class PhoneServer:
         def ask():
             if not self._authorized():
                 return self._deny()
-            text = str((request.get_json(silent=True) or {}).get("text", "")).strip()
+            body = request.get_json(silent=True) or {}
+            text = str(body.get("text", "")).strip()
             if not text:
                 return jsonify({"reply": "Boş mesaj."})
+            session = phone_session(body.get("session_id"))
             try:
-                reply = self.brain.ask("[Telefondan] " + text if _config("PHONE_TAG_MESSAGES", False) else text)
+                reply = self.brain.ask(self._tagged(text), session_id=session, source="phone")
             except Exception as exc:
                 reply = f"Hata: {exc}"
-            return jsonify({"reply": reply})
+            return jsonify({"reply": reply, "session_id": session})
+
+        @app.route("/api/ask_stream", methods=["POST"])
+        def ask_stream():
+            # v2.3: cevap parça parça (SSE). Olaylar: start, wait, tool, token, done, error.
+            if not _config("PHONE_STREAM_ENABLED", True):
+                return jsonify({"error": "Akışlı cevap kapalı (PHONE_STREAM_ENABLED)."}), 404
+            if not self._authorized():
+                return self._deny()
+            body = request.get_json(silent=True) or {}
+            text = str(body.get("text", "")).strip()
+            session = phone_session(body.get("session_id"))
+
+            def generate():
+                if not text:
+                    yield sse_format({"type": "done", "reply": "Boş mesaj."})
+                    return
+                yield sse_format({"type": "start", "session_id": session})
+                try:
+                    for event in self.brain.ask_stream(self._tagged(text), session_id=session, source="phone"):
+                        yield sse_format(event)
+                except Exception as exc:
+                    yield sse_format({"type": "error", "error": f"Hata: {exc}"})
+
+            resp = Response(stream_with_context(generate()), mimetype="text/event-stream")
+            resp.headers["Cache-Control"] = "no-cache"
+            resp.headers["X-Accel-Buffering"] = "no"
+            return resp
 
         @app.route("/api/tts")
         def tts():

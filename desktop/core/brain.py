@@ -1,9 +1,11 @@
 import json
 import re
+import threading
+
 import requests
 
 from config import OLLAMA_URL, MODEL, SYSTEM_PROMPT
-from core.memory import MemoryStore
+from core.memory import VALID_SOURCES, MemoryStore
 from core.tools import TOOLS, ToolManager
 from core.background import BackgroundTaskManager
 from core.council import AICouncil
@@ -43,39 +45,99 @@ class JarvisBrain:
         self.memory = MemoryStore(_cfg("MEMORY_DB", "data/jarvis_memory.db"))
         self.tools = ToolManager(self.memory)
         self.tasks = BackgroundTaskManager(
-            max_workers=getattr(__import__('config'), 'BACKGROUND_MAX_WORKERS', 3),
-            max_retries=getattr(__import__('config'), 'BACKGROUND_MAX_RETRIES', 2),
+            max_workers=_cfg("BACKGROUND_MAX_WORKERS", 3),
+            max_retries=_cfg("BACKGROUND_MAX_RETRIES", 2),
         )
         self.updater = SelfUpdater()
         self.council = AICouncil(self._local_chat_text)
-        self.planner = TaskPlanner(
-            self._local_chat_text,
-            max_steps=getattr(__import__('config'), 'PLANNER_MAX_STEPS', 7),
-        )
+        self.planner = TaskPlanner(self._local_chat_text, max_steps=_cfg("PLANNER_MAX_STEPS", 7))
+        self._init_ollama_lock()
         self.tools.background_runner = self.run_background
         self.tools.planned_runner = self.start_planned_task
         self.tools.task_lister = self.task_status
         self.tools.task_getter = self.task_status
         self.tools.council_runner = self.council_decide
 
-    def _context(self, query):
-        memories, recent = self.memory.build_context(query)
-        memory_text = "\n".join("- " + x for x in memories) or "- Yok"
-        recent_text = "\n".join(f"{role}: {content}" for role, content in recent) or "Yok"
-        return "KALICI HAFIZA:\n" + memory_text + "\n\nYAKIN KONUŞMA:\n" + recent_text
+    # ------------------------------------------------------------ Ollama kilidi (v2.3)
+    def _init_ollama_lock(self):
+        """Flask (threaded), HUD ve arka plan görevleri Ollama'yı aynı anda çağırmasın."""
+        limit = max(1, int(_cfg("OLLAMA_MAX_CONCURRENT", 1) or 1))
+        self._ollama_slots = threading.Semaphore(limit)
 
-    def _chat(self, messages):
-        payload = {
+    def _acquire_slot(self, blocking=True, timeout=None):
+        if not blocking:
+            return self._ollama_slots.acquire(blocking=False)
+        return self._ollama_slots.acquire(timeout=timeout)
+
+    def _release_slot(self):
+        self._ollama_slots.release()
+
+    def _wait_slot(self):
+        timeout = float(_cfg("OLLAMA_LOCK_TIMEOUT", 300))
+        if not self._acquire_slot(timeout=timeout):
+            raise RuntimeError(f"Model meşgul: {timeout:g} saniyedir başka bir isteğin bitmesi bekleniyor. "
+                               "Biraz sonra tekrar deneyin.")
+
+    # ------------------------------------------------------------ model çağrıları
+    @staticmethod
+    def _payload(messages, stream):
+        return {
             "model": MODEL,
             "messages": messages,
             "tools": TOOLS,
-            "stream": False,
+            "stream": stream,
             "think": False,
             "keep_alive": "10m",
         }
-        r = requests.post(OLLAMA_URL, json=payload, timeout=180)
-        r.raise_for_status()
-        return r.json().get("message", {})
+
+    def _chat(self, messages):
+        """Tek seferlik model çağrısı. Kilit yalnızca çağrı süresince tutulur."""
+        self._wait_slot()
+        try:
+            r = requests.post(OLLAMA_URL, json=self._payload(messages, False), timeout=180)
+            r.raise_for_status()
+            return r.json().get("message", {})
+        finally:
+            self._release_slot()
+
+    def _chat_stream(self, messages):
+        """Akışlı model çağrısı. Olaylar: ("wait", None), ("token", metin), ("message", son mesaj).
+
+        Üreteç yarıda kapatılsa da (telefon bağlantıyı kopardı) bağlantı kapanır ve kilit bırakılır.
+        """
+        if not self._acquire_slot(blocking=False):
+            yield ("wait", None)
+            self._wait_slot()
+        resp = None
+        try:
+            resp = requests.post(OLLAMA_URL, json=self._payload(messages, True), timeout=180, stream=True)
+            resp.raise_for_status()
+            content, tool_calls = [], []
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                data = json.loads(raw)
+                if data.get("error"):
+                    raise RuntimeError(f"Ollama hatası: {data['error']}")
+                msg = data.get("message") or {}
+                piece = msg.get("content") or ""
+                if piece:
+                    content.append(piece)
+                    yield ("token", piece)
+                tool_calls.extend(msg.get("tool_calls") or [])
+                if data.get("done"):
+                    break
+            final = {"role": "assistant", "content": "".join(content)}
+            if tool_calls:
+                final["tool_calls"] = tool_calls
+            yield ("message", final)
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+            self._release_slot()
 
     def _local_chat_text(self, prompt):
         msg = self._chat([
@@ -108,22 +170,52 @@ class JarvisBrain:
         actions = ("araştır", "karşılaştır", "kontrol et", "incele", "analiz", "bul", "rapor", "kaynak")
         return any(x in low for x in strong) or (len(low) > 150 and sum(x in low for x in actions) >= 2)
 
-    def ask(self, text, allow_planning=True):
-        """Interactive chat; long tasks can be delegated without blocking the conversation."""
-        self.memory.save_message("user", text)
+    # ------------------------------------------------------------ oturumlar (v2.3)
+    @staticmethod
+    def _session(session_id, source):
+        source = source or "hud"
+        if source not in VALID_SOURCES:
+            raise ValueError(f"Geçersiz kaynak: {source!r} (hud / phone / task)")
+        if session_id is None:
+            session_id = {"hud": _cfg("HUD_SESSION_ID", "hud"),
+                          "phone": _cfg("PHONE_SESSION_ID", "phone")}.get(source, "task")
+        return session_id, source
+
+    def _context(self, query, session_id=None):
+        limit = int(_cfg("RECENT_CONTEXT_MESSAGES", 8))
+        memories, recent = self.memory.build_context(query, session_id=session_id, recent_limit=limit)
+        memory_text = "\n".join("- " + x for x in memories) or "- Yok"
+        recent_text = "\n".join(f"{role}: {content}" for role, content in recent) or "Yok"
+        return "KALICI HAFIZA:\n" + memory_text + "\n\nYAKIN KONUŞMA:\n" + recent_text
+
+    def _prepare(self, text, session_id, source, allow_planning):
+        """Ortak başlangıç: mesajı kaydeder; hazır cevap (sabit/planlı görev) ya da model mesajları döner."""
+        self.memory.save_message("user", text, session_id, source)
         if is_creator_question(text):
-            answer = creator_answer()
-            self.memory.save_message("assistant", answer)
-            return answer
-        if allow_planning and getattr(__import__('config'), 'AUTO_PLANNER', True) and self._looks_like_long_task(text):
-            answer = self.start_planned_task("Otomatik görev: " + text[:70], text)
-            self.memory.save_message("assistant", answer)
-            return answer
-        messages = [
+            return creator_answer(), None
+        if allow_planning and _cfg("AUTO_PLANNER", True) and self._looks_like_long_task(text):
+            return self.start_planned_task("Otomatik görev: " + text[:70], text), None
+        return None, [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "system", "content": self._context(text)},
+            {"role": "system", "content": self._context(text, session_id)},
             {"role": "user", "content": text},
         ]
+
+    def _run_tools(self, calls, messages):
+        for name, args in calls:
+            result = self.tools.execute(name, args)
+            messages.append({"role": "tool", "tool_name": name, "content": str(result)})
+
+    def ask(self, text, session_id=None, source=None, allow_planning=True):
+        """Etkileşimli sohbet. Parametresiz çağrı eskisi gibi HUD oturumunu kullanır.
+
+        Uzun görevler arka plana devredilir; konuşma beklemez.
+        """
+        session_id, source = self._session(session_id, source)
+        ready, messages = self._prepare(text, session_id, source, allow_planning)
+        if ready is not None:
+            self.memory.save_message("assistant", ready, session_id, source)
+            return ready
 
         if self.tools.web.should_search(text):
             results, error = self.tools.web.search(text)
@@ -138,17 +230,67 @@ class JarvisBrain:
             if not calls:
                 answer = (message.get("content") or "").strip()
                 break
-            for name, args in calls:
-                # Planner tool always gets control back immediately by creating a background task.
-                result = self.tools.execute(name, args)
-                messages.append({"role": "tool", "tool_name": name, "content": str(result)})
+            self._run_tools(calls, messages)
 
         answer = answer or "İşlem tamamlandı."
-        self.memory.save_message("assistant", answer)
+        self.memory.save_message("assistant", answer, session_id, source)
         return answer
 
+    def ask_stream(self, text, session_id=None, source=None, allow_planning=True):
+        """v2.3: cevabı parça parça üretir (telefonun /api/ask_stream ucu).
+
+        Olaylar: {"type": "wait"} · {"type": "tool", "name", "text"} · {"type": "token", "text"} ·
+        {"type": "done", "reply"}. Hata olursa istisna fırlatılır (sunucu "error" olayına çevirir).
+        Araç çağrısından önceki ara metin son cevaba dahil edilmez (ask ile aynı davranış).
+        """
+        session_id, source = self._session(session_id, source)
+        ready, messages = self._prepare(text, session_id, source, allow_planning)
+        if ready is not None:
+            self.memory.save_message("assistant", ready, session_id, source)
+            yield {"type": "token", "text": ready}
+            yield {"type": "done", "reply": ready}
+            return
+
+        if self.tools.web.should_search(text):
+            yield {"type": "tool", "name": "web_search", "text": "araç çalışıyor: web_search"}
+            results, error = self.tools.web.search(text)
+            if not error and results:
+                messages.append({"role": "system", "content": "İLK WEB ARAŞTIRMASI:\n" + self.tools.web.context(results)})
+
+        answer = ""
+        waited = False
+        for _ in range(8):
+            message = {}
+            for kind, value in self._chat_stream(messages):
+                if kind == "wait":
+                    if not waited:
+                        waited = True
+                        yield {"type": "wait", "text": "Model meşgul, sıra bekleniyor."}
+                elif kind == "token":
+                    yield {"type": "token", "text": value}
+                elif kind == "message":
+                    message = value
+            messages.append(message)
+            calls = self._calls(message)
+            if not calls:
+                answer = (message.get("content") or "").strip()
+                break
+            for name, _args in calls:
+                yield {"type": "tool", "name": name, "text": f"araç çalışıyor: {name}"}
+            self._run_tools(calls, messages)
+
+        answer = answer or "İşlem tamamlandı."
+        self.memory.save_message("assistant", answer, session_id, source)
+        yield {"type": "done", "reply": answer}
+
+    # ------------------------------------------------------------ arka plan görevleri
+    def _background_ask(self, prompt, task_id=None):
+        """Arka plan görevi kendi oturumunda (task-<id>) konuşur; sohbet geçmişini görmez/kirletmez."""
+        return self.ask(prompt, session_id=f"task-{task_id or 'bg'}", source="task", allow_planning=False)
+
     def run_background(self, title, prompt):
-        task_id = self.tasks.submit(title, self.ask, prompt, allow_planning=False, retries=getattr(__import__('config'), 'BACKGROUND_MAX_RETRIES', 2))
+        task_id = self.tasks.submit(title, self._background_ask, prompt,
+                                    retries=_cfg("BACKGROUND_MAX_RETRIES", 2))
         return f"Arka plan görevi başlatıldı. Görev ID: {task_id}"
 
     @staticmethod
@@ -209,6 +351,9 @@ Sadece kısa bir düzeltme talimatı ver; kullanıcıya sorma. Geri dönüşü z
         raise RuntimeError(f"Desteklenmeyen plan adımı: {kind}")
 
     def _execute_planned(self, title, goal, task_id=None):
+        # v2.3: planlı görev kendi oturumuna (task-<id>) yazar; sohbet geçmişini kirletmez.
+        session = f"task-{task_id or 'plan'}"
+        self.memory.save_message("user", goal, session, "task")
         plan = self.planner.create_plan(goal)
         steps = plan["steps"]
         if task_id:
@@ -249,6 +394,7 @@ Sadece kısa bir düzeltme talimatı ver; kullanıcıya sorma. Geri dönüşü z
             "JARVIS görevi için aşağıdaki adım sonuçlarını birleştir. Sonucu Türkçe ve uygulanabilir ver. "
             "Eksik/çelişkili noktaları açıkça belirt.\n\nHEDEF:\n" + goal + "\n\n" + previous
         )
+        self.memory.save_message("assistant", synthesis or "", session, "task")
         return synthesis
 
     def start_planned_task(self, title, goal):
@@ -257,7 +403,7 @@ Sadece kısa bir düzeltme talimatı ver; kullanıcıya sorma. Geri dönüşü z
             self._execute_planned,
             title,
             goal,
-            retries=getattr(__import__('config'), 'BACKGROUND_MAX_RETRIES', 2),
+            retries=_cfg("BACKGROUND_MAX_RETRIES", 2),
             recovery_fn=lambda error, tid: self._recover_plan(goal, error, title),
         )
         return f"Planlı arka plan görevi başlatıldı. Görev ID: {task_id}. JARVIS planı kendi oluşturup yürütecek."

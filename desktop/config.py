@@ -130,6 +130,15 @@ TAILSCALE_DETECT = True
 # py main.py --headless çıktısı bu dosyaya da yazılır (pyw ile konsolsuz çalışırken de).
 HEADLESS_LOG_FILE = "data/jarvis_headless.log"
 
+# JARVIS v2.3 — Konuşma oturumları + eşzamanlılık kilidi + akışlı cevap
+# HUD, her telefon ve her arka plan görevi ayrı oturumda konuşur; kalıcı hafıza ortaktır.
+HUD_SESSION_ID = "hud"
+PHONE_SESSION_ID = "phone"          # oturum kimliği göndermeyen eski telefon uygulamaları için
+RECENT_CONTEXT_MESSAGES = 8         # yakın konuşma bağlamı (yalnızca o oturumdan)
+OLLAMA_MAX_CONCURRENT = 1           # aynı anda en fazla bu kadar model çağrısı; diğerleri sırada bekler
+OLLAMA_LOCK_TIMEOUT = 300           # bu kadar saniyede sıra gelmezse "Model meşgul" hatası
+PHONE_STREAM_ENABLED = True         # POST /api/ask_stream (SSE); False -> 404
+
 # JARVIS v2.7 — Sade HUD (interface/gpu_hud.py)
 # Ekranda yalnızca seçili modun görseli, altta durum kelimesi ve kısa altyazı kalır.
 # True yaparsan eski paneli (hava durumu, harita, sensörler, sohbet kaydı…) geri açarsın:
