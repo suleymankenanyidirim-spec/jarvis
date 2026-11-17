@@ -367,7 +367,8 @@ class PhoneTtsTest(unittest.TestCase):
 
     def test_tts_uses_engine_layer(self):
         with mock.patch.object(tts, "synthesize", return_value=(b"RIFFwav", "wav", "gemini")) as syn:
-            resp = self.client.get("/api/tts?text=Merhaba", headers={"X-Jarvis-Token": "tok"})
+            # v2.6: /api/tts POST oldu (GET -> 405, bkz. test_phone_security)
+            resp = self.client.post("/api/tts", json={"text": "Merhaba"}, headers={"X-Jarvis-Token": "tok"})
         syn.assert_called_once_with("Merhaba")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.mimetype, "audio/wav")
@@ -375,10 +376,10 @@ class PhoneTtsTest(unittest.TestCase):
 
     def test_tts_mp3_and_failure(self):
         with mock.patch.object(tts, "synthesize", return_value=(b"ID3", "mp3", "edge")):
-            resp = self.client.get("/api/tts?text=a", headers={"X-Jarvis-Token": "tok"})
+            resp = self.client.post("/api/tts", json={"text": "a"}, headers={"X-Jarvis-Token": "tok"})
         self.assertEqual(resp.mimetype, "audio/mpeg")
         with mock.patch.object(tts, "synthesize", side_effect=RuntimeError("yok")), mock.patch("builtins.print"):
-            resp = self.client.get("/api/tts?text=a", headers={"X-Jarvis-Token": "tok"})
+            resp = self.client.post("/api/tts", json={"text": "a"}, headers={"X-Jarvis-Token": "tok"})
         self.assertEqual(resp.status_code, 204)
 
     def test_status_includes_tts(self):

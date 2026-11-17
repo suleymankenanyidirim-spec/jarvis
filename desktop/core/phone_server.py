@@ -1,23 +1,32 @@
 """
-Telefon Bağlantısı (v1.4)
-=========================
-Aynı WiFi ağındaki telefondan JARVIS'e bağlanmak için küçük bir web sunucusu.
+Telefon Bağlantısı
+==================
+Telefondan (ev WiFi'si ya da Tailscale ile her yerden) JARVIS'e bağlanmak için küçük bir web sunucusu.
 
-- http://<PC_IP>:5000/?token=XXXX  -> telefon arayüzünü (PWA) doğrudan açar
-- /api/*                            -> telefon uygulamasının (APK / GitHub Pages) kullandığı JSON API
+- http://<PC_IP>:5000/?pair=KOD&pcs=…  -> telefon arayüzünü (PWA) açar ve tek kullanımlık kodla eşleşir
+- /api/*                               -> telefon uygulamasının (APK / GitHub Pages) kullandığı JSON API
 
-Güvenlik: v1.3.1'de aynı ağdaki herkes JARVIS'e komut verebiliyordu.
-v1.4'te tüm API çağrıları bir erişim anahtarı (token) ister. Anahtar
-config.PHONE_TOKEN'dan alınır; boşsa data/phone_token.txt içinde üretilir.
+Güvenlik:
+- v1.4: tüm API çağrıları bir erişim anahtarı ister. Anahtar config.PHONE_TOKEN'dan alınır; boşsa
+  data/phone_token.txt içinde üretilir.
+- v2.6: anahtar yalnızca X-Jarvis-Token başlığında kabul edilir (?token= ve gövdedeki token yok sayılır),
+  böylece URL'lere, tarayıcı geçmişine ve günlüklere düşmez. İlk eşleşme PC'nin ürettiği tek kullanımlık,
+  kısa ömürlü kodla yapılır (POST /api/pair). IP başına hatalı deneme sınırı (429 + Retry-After).
+  CORS yalnızca izinli kaynaklara. /api/tts POST oldu.
 """
 
+import asyncio
+import base64
 import hmac
+import inspect
 import ipaddress
 import json
+import math
 import secrets
 import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -48,6 +57,122 @@ def load_token():
         TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
         TOKEN_FILE.write_text(token, encoding="utf8")
     return token
+
+
+# ------------------------------------------------------------------ v2.6: eşleşme kodu
+PAIR_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"      # karışan 0/O/1/I yok
+DEFAULT_CORS_ORIGINS = ("https://localhost", "http://localhost", "capacitor://localhost")
+LOCAL_ADDRS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
+def normalize_pair_code(code):
+    return "".join(ch for ch in str(code or "").upper() if ch.isalnum())
+
+
+def format_pair_code(code):
+    code = normalize_pair_code(code)
+    return code[:4] + "-" + code[4:] if len(code) > 4 else code
+
+
+class PairingCodes:
+    """Tek kullanımlık, kısa ömürlü eşleşme kodu. Bir koda max_failures hatalı denemede kod iptal olur."""
+
+    def __init__(self, ttl=300, length=8, max_failures=5, clock=time.monotonic):
+        self.ttl = float(ttl)
+        self.length = int(length)
+        self.max_failures = int(max_failures)
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._code = None
+        self._expires = 0.0
+        self._failures = 0
+
+    def new(self):
+        with self._lock:
+            self._code = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(self.length))
+            self._expires = self.clock() + self.ttl
+            self._failures = 0
+            return self._code
+
+    def _valid(self):
+        if self._code and self.clock() >= self._expires:
+            self._code = None
+        return self._code
+
+    def current(self):
+        with self._lock:
+            return self._valid()
+
+    def expires_in(self):
+        with self._lock:
+            return max(0, int(math.ceil(self._expires - self.clock()))) if self._valid() else 0
+
+    def redeem(self, code):
+        with self._lock:
+            active = self._valid()
+            if not active:
+                return False
+            if hmac.compare_digest(normalize_pair_code(code), active):
+                self._code = None                 # tek kullanımlık
+                return True
+            self._failures += 1
+            if self._failures >= self.max_failures:
+                self._code = None                 # çok hatalı deneme: kod iptal
+            return False
+
+
+class FailureLimiter:
+    """IP başına hatalı anahtar/kod sınırı: window saniyede max_failures hata -> lockout saniye kilit."""
+
+    def __init__(self, max_failures=10, window=300, lockout=600, clock=time.monotonic):
+        self.max_failures = max(1, int(max_failures))
+        self.window = float(window)
+        self.lockout = float(lockout)
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._fails = {}
+        self._locked = {}
+
+    def retry_after(self, key):
+        with self._lock:
+            until = self._locked.get(key, 0.0)
+            left = until - self.clock()
+            if left <= 0:
+                self._locked.pop(key, None)
+                return 0
+            return int(math.ceil(left))
+
+    def fail(self, key):
+        with self._lock:
+            now = self.clock()
+            recent = [t for t in self._fails.get(key, []) if now - t < self.window]
+            recent.append(now)
+            if len(recent) >= self.max_failures:
+                self._locked[key] = now + self.lockout
+                recent = []
+            self._fails[key] = recent
+
+    def success(self, key):
+        with self._lock:
+            self._fails.pop(key, None)
+
+
+def cors_origins():
+    """İzinli CORS kaynakları; GITHUB_REPO doluysa https://<kullanıcı>.github.io eklenir."""
+    value = _config("PHONE_CORS_ORIGINS", list(DEFAULT_CORS_ORIGINS))
+    if isinstance(value, str):
+        value = value.split(",")
+    out = []
+    for item in value or []:
+        item = str(item).strip().rstrip("/")
+        if item and item not in out:
+            out.append(item)
+    repo = str(_config("GITHUB_REPO", "") or "").strip()
+    if repo and "/" in repo and _config("PHONE_CORS_GITHUB_PAGES", True):
+        pages = f"https://{repo.split('/')[0].strip().lower()}.github.io"
+        if pages not in out:
+            out.append(pages)
+    return out
 
 
 def phone_session(value):
@@ -101,23 +226,68 @@ class PhoneServer:
         self.token = load_token()
         self.ui_dir = find_ui_dir()
         self.links = {}
+        self.limiter = FailureLimiter(_config("PHONE_AUTH_MAX_FAILURES", 10), _config("PHONE_AUTH_WINDOW", 300),
+                                      _config("PHONE_AUTH_LOCKOUT", 600))
+        self.pairing = PairingCodes(ttl=_config("PHONE_PAIR_CODE_TTL", 300),
+                                    max_failures=_config("PHONE_PAIR_MAX_FAILURES", 5))
         self.app = Flask("jarvis_phone")
         self._routes()
 
     # ------------------------------------------------------------- helpers
+    @staticmethod
+    def _client():
+        return request.remote_addr or "?"
+
     def _authorized(self):
-        given = (request.headers.get("X-Jarvis-Token")
-                 or request.args.get("token")
-                 or (request.get_json(silent=True) or {}).get("token")
-                 or "")
-        return hmac.compare_digest(str(given).strip(), self.token)
+        """v2.6: anahtar yalnızca X-Jarvis-Token başlığında. Hatalı anahtar IP başına sayılır;
+        kilitliyken doğru anahtar da geçmez. Hiç anahtar gönderilmemişse deneme sayılmaz."""
+        ip = self._client()
+        if self.limiter.retry_after(ip):
+            return False
+        given = str(request.headers.get("X-Jarvis-Token", "") or "").strip()
+        if not given:
+            return False
+        if hmac.compare_digest(given.encode("utf8"), self.token.encode("utf8")):
+            self.limiter.success(ip)
+            return True
+        self.limiter.fail(ip)
+        return False
+
+    def _too_many(self, wait):
+        resp = jsonify({"error": f"Çok fazla hatalı deneme. {wait} saniye sonra tekrar deneyin.",
+                        "retry_after": wait})
+        resp.status_code = 429
+        resp.headers["Retry-After"] = str(wait)
+        return resp
 
     @staticmethod
     def _tagged(text):
         return "[Telefondan] " + text if _config("PHONE_TAG_MESSAGES", False) else text
 
     def _deny(self):
-        return jsonify({"error": "Yetkisiz. Telefon uygulamasına PC'deki erişim anahtarını gir."}), 401
+        wait = self.limiter.retry_after(self._client())
+        if wait:
+            return self._too_many(wait)
+        return jsonify({"error": "Yetkisiz. Telefonu PC ile eşleştir (AYAR → Eşleşme kodu) "
+                                 "ya da PC'deki erişim anahtarını gir."}), 401
+
+    def new_pair_code(self):
+        """Yeni eşleşme kodu üretir, link dosyasını yeni kodla günceller ve kodu döndürür."""
+        code = self.pairing.new()
+        links = build_links(self.links.get("lan_ip", ""), self.links.get("ts_ip", ""), self.port, code)
+        write_link_file(link_report(links, code))
+        print(f"[TELEFON] Yeni eşleşme kodu: {format_pair_code(code)} "
+              f"({int(self.pairing.ttl // 60)} dakika geçerli, tek kullanımlık)")
+        return code
+
+    def _audio(self, text):
+        """_synthesize sonucu: (ses, mime) ya da yalnızca ses; eşzamansız olabilir."""
+        result = self._synthesize(text)
+        if inspect.isawaitable(result):
+            result = asyncio.run(result)
+        if isinstance(result, tuple):
+            return result[0], result[1]
+        return result, "audio/mpeg"
 
     def _status(self):
         import config
@@ -179,12 +349,24 @@ class PhoneServer:
 
         @app.after_request
         def cors(resp):
-            if _config("PHONE_ALLOW_CORS", True):
+            # v2.6: yalnızca listedeki kaynaklara; izinli kaynak yansıtılır (Vary: Origin).
+            # PC'nin kendi sunduğu sayfa (aynı kaynak) ve APK (CapacitorHttp) CORS'tan etkilenmez.
+            origin = request.headers.get("Origin", "").strip().rstrip("/")
+            if not origin or not _config("PHONE_ALLOW_CORS", True):
+                return resp
+            allowed = cors_origins()
+            if "*" in allowed:
                 resp.headers["Access-Control-Allow-Origin"] = "*"
-                resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Jarvis-Token"
-                resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
-                # Chrome "Private Network Access": https sayfadan yerel ağa izin
-                resp.headers["Access-Control-Allow-Private-Network"] = "true"
+            elif origin in allowed:
+                resp.headers["Access-Control-Allow-Origin"] = origin
+                resp.headers.add("Vary", "Origin")
+            else:
+                return resp
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Jarvis-Token"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+            resp.headers["Access-Control-Expose-Headers"] = "Retry-After"
+            # Chrome "Private Network Access": https sayfadan yerel ağa izin
+            resp.headers["Access-Control-Allow-Private-Network"] = "true"
             return resp
 
         @app.route("/api/<path:_any>", methods=["OPTIONS"])
@@ -209,6 +391,41 @@ class PhoneServer:
         def ping():
             # Token gerektirmez: uygulama sunucunun JARVIS olduğunu anlasın.
             return jsonify({"jarvis": True, "version": _version(), "auth": self._authorized()})
+
+        # --- v2.6: eşleşme kodu ---
+        @app.route("/api/pair", methods=["POST"])
+        def pair():
+            ip = self._client()
+            wait = self.limiter.retry_after(ip)
+            if wait:
+                return self._too_many(wait)
+            code = (request.get_json(silent=True) or {}).get("code", "")
+            if self.pairing.redeem(code):
+                self.limiter.success(ip)
+                print(f"[TELEFON] Telefon eşleşti: {ip}")
+                return jsonify({"token": self.token, "paired": True})
+            self.limiter.fail(ip)
+            wait = self.limiter.retry_after(ip)
+            if wait:
+                return self._too_many(wait)
+            return jsonify({"error": "Eşleşme kodu geçersiz ya da süresi dolmuş. PC'de TELEFON_ESLESTIR.bat "
+                                     "ile yeni kod alın."}), 403
+
+        @app.route("/api/pair/new", methods=["POST"])
+        def pair_new():
+            # Yeni kod yalnızca PC'nin kendisinden istenebilir (TELEFON_ESLESTIR.bat).
+            if self._client() not in LOCAL_ADDRS:
+                return jsonify({"error": "Yeni eşleşme kodu yalnızca PC'nin kendisinden istenebilir."}), 403
+            code = self.new_pair_code()
+            ttl = int(self.pairing.ttl)
+            if request.args.get("format") == "text":
+                return Response(f"Eşleşme kodu: {format_pair_code(code)}  ({ttl // 60} dakika geçerli, "
+                                "tek kullanımlık)\n", mimetype="text/plain; charset=utf-8")
+            return jsonify({"code": code, "formatted": format_pair_code(code), "expires_in": ttl})
+
+        @app.route("/api/pair/new", methods=["GET"])
+        def pair_new_get():
+            return jsonify({"error": "POST kullanın."}), 405
 
         @app.route("/api/status")
         def status():
@@ -258,19 +475,29 @@ class PhoneServer:
             resp.headers["X-Accel-Buffering"] = "no"
             return resp
 
-        @app.route("/api/tts")
+        @app.route("/api/tts", methods=["POST"])
         def tts():
+            # v2.6: POST. {"text"} -> ses dosyası; {"text", "format": "base64"} -> {"audio", "mime"}.
             if not self._authorized():
                 return self._deny()
-            text = request.args.get("text", "").strip()[:3000]
+            body = request.get_json(silent=True) or {}
+            text = str(body.get("text", "") or "").strip()[:3000]
             if not text:
                 return Response(status=204)
             try:
-                audio, mimetype = self._synthesize(text)
-                return Response(audio, mimetype=mimetype)
+                audio, mimetype = self._audio(text)
             except Exception as exc:
                 print("[TELEFON] TTS hata:", exc)
                 return Response(status=204)
+            if str(body.get("format", "")).lower() == "base64":
+                return jsonify({"audio": base64.b64encode(audio).decode("ascii"), "mime": mimetype})
+            return Response(audio, mimetype=mimetype)
+
+        @app.route("/api/tts", methods=["GET"])
+        def tts_get():
+            # Eski uygulama (GET ?text=&token=) cihaz sesine düşsün diye 404 değil, açıklamalı 405.
+            return jsonify({"error": "GET /api/tts kaldırıldı (v2.6). POST {\"text\"} kullanın; "
+                                     "telefon uygulamasını v1.9 ya da üstüne güncelleyin."}), 405
 
         # --- v2.4: hafıza eşitleme (PC'deki SQLite tek doğru kaynak) ---
         @app.route("/api/memories", methods=["GET", "POST", "DELETE"])
@@ -435,10 +662,13 @@ def port_in_use(port, host="127.0.0.1"):
         s.close()
 
 
-def build_links(lan_ip, ts_ip, port, token):
-    """v2.2: ev WiFi (LAN) ve Tailscale linkleri; ikisi de pcs= ile tüm adresleri taşır."""
+def build_links(lan_ip, ts_ip, port, pair_code):
+    """Ev WiFi (LAN) ve Tailscale linkleri; ikisi de pcs= ile tüm adresleri taşır (v2.2).
+
+    v2.6: linkte erişim anahtarı değil, tek kullanımlık eşleşme kodu (?pair=) bulunur.
+    """
     bases = [f"http://{ip}:{port}" for ip in (lan_ip, ts_ip) if ip]
-    secret = "token=" + quote(str(token), safe="")
+    secret = "pair=" + quote(str(pair_code), safe="")
     pcs = "&pcs=" + quote(",".join(bases), safe="") if len(bases) > 1 else ""
 
     def link(ip):
@@ -446,15 +676,18 @@ def build_links(lan_ip, ts_ip, port, token):
     return {"bases": bases, "lan": link(lan_ip), "tailscale": link(ts_ip)}
 
 
-def link_report(links, token):
+def link_report(links, pair_code):
+    """data/phone_link.txt içeriği. Erişim anahtarı bu dosyaya yazılmaz (yalnızca eşleşme kodu)."""
     lines = [
         "JARVIS telefon bağlantısı",
         f"Ev WiFi (LAN) linki : {links.get('lan') or 'bulunamadı'}",
         f"Tailscale linki     : {links.get('tailscale') or 'bulunamadı'}",
+        f"Eşleşme kodu        : {format_pair_code(pair_code)}",
+        "  (tek kullanımlık, birkaç dakika geçerli; yenisi için TELEFON_ESLESTIR.bat)",
         "Uygulamada PC adresleri (her satıra bir adres):",
     ]
     lines += ["  " + b for b in links.get("bases", [])]
-    lines.append(f"Erişim anahtarı     : {token}")
+    lines.append("Linki telefonda aç ya da AYAR → Eşleşme kodu kutusuna kodu yazıp PC İLE EŞLEŞ'e bas.")
     return "\n".join(lines) + "\n"
 
 
@@ -497,12 +730,16 @@ def start_phone_server(brain, port=5000):
         return None
     server = PhoneServer(brain, port)
     lan, ts = local_ip(), tailscale_ip()
-    links = build_links(lan, ts, port, server.token)
     server.links = {"lan_ip": lan, "ts_ip": ts}
-    report = link_report(links, server.token)
+    code = server.pairing.new()
+    links = build_links(lan, ts, port, code)
+    report = link_report(links, code)
     print("[TELEFON] Ev WiFi linki       :", links["lan"])
     print("[TELEFON] Tailscale linki     :", links["tailscale"] or "bulunamadı (Tailscale kurulu/açık değil)")
     print("[TELEFON] Uygulamada PC adresleri:", ", ".join(links["bases"]))
+    print(f"[TELEFON] Eşleşme kodu        : {format_pair_code(code)} "
+          f"({int(server.pairing.ttl // 60)} dk geçerli, tek kullanımlık; yenisi: TELEFON_ESLESTIR.bat)")
+    print("[TELEFON] Erişim anahtarını elle girmek için: data\\phone_token.txt")
     write_link_file(report)
     _print_qr(links["tailscale"] or links["lan"])
     threading.Thread(target=server.run, daemon=True).start()

@@ -145,6 +145,48 @@ HISTORY_DEFAULT_LIMIT = 50          # GET /api/history varsayılan mesaj sayıs�
 HISTORY_MAX_LIMIT = 500             # GET /api/history üst sınırı
 SYNC_MAX_ITEMS = 500                # POST /api/memories toplu eşitlemede en fazla öğe
 
+# JARVIS v2.6 — Ses tanıma: faster-whisper (voice/listener.py)
+WHISPER_MODEL = "small"             # tiny / base / small / medium / large-v3
+WHISPER_DEVICE = "auto"             # "auto" (CUDA varsa ekran kartı) / "cuda" / "cpu"
+WHISPER_COMPUTE_TYPE = ""           # boş: cuda -> float16, cpu -> int8
+WHISPER_BEAM_SIZE = 5
+WHISPER_VAD_FILTER = True           # konuşma olmayan bölümleri at
+
+# JARVIS v2.6 — "Jarvis" uyandırma sözcüğü (varsayılan kapalı; Ctrl+Space bas-konuş her zaman çalışır)
+WAKE_WORD_ENABLED = False
+WAKE_WORD_ENGINE = "openwakeword"   # "openwakeword" (hazır hey_jarvis modeli) / "whisper" (yedek motor)
+WAKE_WORD_THRESHOLD = 0.5
+WAKE_WORD_MODEL = ""                # kendi modelin: .onnx / .tflite yolu (boş: hey_jarvis)
+WAKE_WORD_ALIASES = ["jarvis", "carvis", "cervis", "jarviz", "carviz", "cervız", "yarvis", "jervis"]
+WAKE_WORD_COOLDOWN = 1.5            # bir uyandırmadan sonra bu kadar saniye yeni uyandırma dinlenmez
+# Sessizlikte otomatik durma
+VOICE_SILENCE_SECONDS = 1.2         # konuşma bittikten bu kadar sonra kayıt durur
+VOICE_NO_SPEECH_TIMEOUT = 6.0       # uyandırmadan sonra hiç konuşulmazsa vazgeçilir
+VOICE_MAX_RECORD_SECONDS = 30.0     # tek kaydın üst sınırı
+VOICE_SILENCE_RMS = 0.01            # bunun altı sessizlik sayılır
+VOICE_SILENCE_AUTOSTOP_PTT = False  # True: bas-konuşta da sessizlikte kendiliğinden dur
+
+# JARVIS v2.6 — Telefon güvenliği (core/phone_server.py)
+# Anahtar yalnızca X-Jarvis-Token başlığında kabul edilir (?token= ve gövdedeki token yok sayılır).
+PHONE_PAIR_CODE_TTL = 300           # tek kullanımlık eşleşme kodunun ömrü (saniye)
+PHONE_PAIR_MAX_FAILURES = 5         # bir koda bu kadar hatalı denemede kod iptal olur
+PHONE_AUTH_WINDOW = 300             # bu kadar saniyede ...
+PHONE_AUTH_MAX_FAILURES = 10        # ... bu kadar hatalı anahtar/kod gelirse o IP ...
+PHONE_AUTH_LOCKOUT = 600            # ... bu kadar saniye kilitlenir (429 + Retry-After)
+# CORS yalnızca bu kaynaklara (GITHUB_REPO doluysa https://<kullanıcı>.github.io kendiliğinden eklenir).
+PHONE_CORS_ORIGINS = ["https://localhost", "http://localhost", "capacitor://localhost"]
+PHONE_CORS_GITHUB_PAGES = True
+
+# JARVIS v2.6 — Telefondan gelen isteklerde kullanılabilecek araçlar.
+# Varsayılan olarak kapalı: close_application, paste_text, paste_clipboard, stage_self_update.
+# Açmak için bu listeyi config_local.py'ye kopyalayıp aracı ekle.
+PHONE_ALLOWED_TOOLS = [
+    "open_application", "open_folder", "open_file", "open_url", "get_system_info", "web_search",
+    "save_memory", "forget_memory", "helmet_control", "run_background_task", "list_background_tasks",
+    "get_background_task", "council_consult", "get_jarvis_status", "start_planned_task",
+    "browser_search", "browser_visit", "clipboard_copy", "clipboard_read", "copy_selected_text",
+]
+
 # JARVIS v2.7 — Sade HUD (interface/gpu_hud.py)
 # Ekranda yalnızca seçili modun görseli, altta durum kelimesi ve kısa altyazı kalır.
 # True yaparsan eski paneli (hava durumu, harita, sensörler, sohbet kaydı…) geri açarsın:

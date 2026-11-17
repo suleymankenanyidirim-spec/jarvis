@@ -451,7 +451,7 @@ class SadeHUD:
 
         self._restore_voice()
         from voice.listener import VoiceListener
-        self.listener = VoiceListener(model_name="small")
+        self.listener = VoiceListener()      # v2.6: model config.WHISPER_MODEL (varsayılan "small")
         try:
             from voice.speaker import VoiceSpeaker
             self.speaker = VoiceSpeaker()
@@ -796,6 +796,29 @@ class SadeHUD:
         except Exception as exc:
             self.voice_error = True
             print("VOICE:", exc)
+            return
+        # v2.6: "Jarvis" uyandırma sözcüğü (config.WAKE_WORD_ENABLED). Başlatılamazsa bas-konuş yine çalışır.
+        if getattr(config, "WAKE_WORD_ENABLED", False) and hasattr(self.listener, "start_wake"):
+            try:
+                self.listener.start_wake(on_wake=self._on_wake, on_auto_stop=self._on_auto_stop,
+                                         pause_when=self._wake_paused)
+            except Exception as exc:
+                print("[SES] Uyandırma sözcüğü başlatılamadı (bas-konuş çalışıyor):", exc)
+
+    def _wake_paused(self):
+        # JARVIS konuşurken ve bas-konuş basılıyken uyandırma dinlenmez (kendi sesiyle tetiklenmesin).
+        return bool(getattr(self.speaker, "speaking", False) or self.space_held or self.transcribing)
+
+    def _on_wake(self):
+        # Kayıt başladı; durum kelimesi listener.recording'den kendiliğinden DİNLİYORUM olur.
+        print("[SES] \"Jarvis\" duyuldu, dinliyorum.")
+
+    def _on_auto_stop(self, reason):
+        # Uyandırmayla başlayan kayıt konuşma bitince kendiliğinden durdu: yazıya dök.
+        if self.transcribing:
+            return
+        self.transcribing = True
+        self._record_voice()
 
     def _query_gpu(self):
         try:

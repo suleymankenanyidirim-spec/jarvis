@@ -217,6 +217,11 @@ TOOLS = [
 
 ]
 
+# v2.6: tüm araç adları ve telefondan varsayılan olarak kapalı olanlar (config.PHONE_ALLOWED_TOOLS bunların dışındakiler).
+TOOL_NAMES = tuple(t["function"]["name"] for t in TOOLS)
+PHONE_BLOCKED_BY_DEFAULT = ("close_application", "paste_text", "paste_clipboard", "stage_self_update")
+
+
 class ToolManager:
     def __init__(self, memory):
         self.memory = memory

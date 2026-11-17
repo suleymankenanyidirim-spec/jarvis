@@ -6,7 +6,7 @@ import requests
 
 from config import OLLAMA_URL, MODEL, SYSTEM_PROMPT
 from core.memory import VALID_SOURCES, MemoryStore
-from core.tools import TOOLS, ToolManager
+from core.tools import PHONE_BLOCKED_BY_DEFAULT, TOOL_NAMES, TOOLS, ToolManager
 from core.background import BackgroundTaskManager
 from core.council import AICouncil
 from core.planner import TaskPlanner
@@ -32,6 +32,23 @@ def is_creator_question(text):
 def _cfg(name, default=None):
     import config
     return getattr(config, name, default)
+
+
+def phone_allowed_tools():
+    """v2.6: telefondan (source="phone") kullanılabilecek araçlar (config.PHONE_ALLOWED_TOOLS)."""
+    value = _cfg("PHONE_ALLOWED_TOOLS", None)
+    if value is None:
+        return frozenset(TOOL_NAMES) - set(PHONE_BLOCKED_BY_DEFAULT)
+    if isinstance(value, str):
+        value = value.split(",")
+    return frozenset(str(x).strip() for x in value if str(x).strip())
+
+
+def filter_tools(allowed):
+    """Ollama'ya gönderilecek araç tanımları: allowed None ise hepsi."""
+    if allowed is None:
+        return TOOLS
+    return [t for t in TOOLS if t["function"]["name"] in allowed]
 
 
 def creator_answer():
@@ -65,6 +82,7 @@ class JarvisBrain:
         """Flask (threaded), HUD ve arka plan görevleri Ollama'yı aynı anda çağırmasın."""
         limit = max(1, int(_cfg("OLLAMA_MAX_CONCURRENT", 1) or 1))
         self._ollama_slots = threading.Semaphore(limit)
+        self._tool_ctx = threading.local()      # v2.6: o an çalışan isteğin araç kısıtı (iş parçacığına özel)
 
     def _acquire_slot(self, blocking=True, timeout=None):
         if not blocking:
@@ -82,27 +100,27 @@ class JarvisBrain:
 
     # ------------------------------------------------------------ model çağrıları
     @staticmethod
-    def _payload(messages, stream):
+    def _payload(messages, stream, allowed_tools=None):
         return {
             "model": MODEL,
             "messages": messages,
-            "tools": TOOLS,
+            "tools": filter_tools(allowed_tools),   # v2.6: telefonda yalnızca izinli araçların tanımı
             "stream": stream,
             "think": False,
             "keep_alive": "10m",
         }
 
-    def _chat(self, messages):
+    def _chat(self, messages, allowed_tools=None):
         """Tek seferlik model çağrısı. Kilit yalnızca çağrı süresince tutulur."""
         self._wait_slot()
         try:
-            r = requests.post(OLLAMA_URL, json=self._payload(messages, False), timeout=180)
+            r = requests.post(OLLAMA_URL, json=self._payload(messages, False, allowed_tools), timeout=180)
             r.raise_for_status()
             return r.json().get("message", {})
         finally:
             self._release_slot()
 
-    def _chat_stream(self, messages):
+    def _chat_stream(self, messages, allowed_tools=None):
         """Akışlı model çağrısı. Olaylar: ("wait", None), ("token", metin), ("message", son mesaj).
 
         Üreteç yarıda kapatılsa da (telefon bağlantıyı kopardı) bağlantı kapanır ve kilit bırakılır.
@@ -112,7 +130,8 @@ class JarvisBrain:
             self._wait_slot()
         resp = None
         try:
-            resp = requests.post(OLLAMA_URL, json=self._payload(messages, True), timeout=180, stream=True)
+            resp = requests.post(OLLAMA_URL, json=self._payload(messages, True, allowed_tools),
+                                 timeout=180, stream=True)
             resp.raise_for_status()
             content, tool_calls = [], []
             for raw in resp.iter_lines():
@@ -203,17 +222,44 @@ class JarvisBrain:
             {"role": "user", "content": text},
         ]
 
-    def _run_tools(self, calls, messages):
-        for name, args in calls:
-            result = self.tools.execute(name, args)
-            messages.append({"role": "tool", "tool_name": name, "content": str(result)})
+    # ------------------------------------------------------------ araç kısıtı (v2.6)
+    @staticmethod
+    def allowed_tools_for(source, inherited=None):
+        """Bu istekte kullanılabilecek araçlar; None = hepsi (HUD, PC'de başlatılan görevler).
 
-    def ask(self, text, session_id=None, source=None, allow_planning=True):
+        Telefondan başlatılan arka plan görevi kısıtı `inherited` ile devralır; bu yolla aşılamaz.
+        """
+        if inherited is not None:
+            return frozenset(inherited)
+        if source == "phone":
+            return phone_allowed_tools()
+        return None
+
+    def _run_tools(self, calls, messages, allowed=None):
+        ctx = getattr(self, "_tool_ctx", None)
+        if ctx is None:
+            ctx = self._tool_ctx = threading.local()
+        previous = getattr(ctx, "allowed", None)
+        ctx.allowed = allowed            # run_background_task bu kısıtı arka plan görevine aktarır
+        try:
+            for name, args in calls:
+                if allowed is not None and name not in allowed:
+                    print(f"[GÜVENLİK] Telefondan kapalı araç çağrıldı, çalıştırılmadı: {name}")
+                    result = (f"ARAÇ_ENGELLİ: '{name}' aracı telefondan kullanılamaz (PHONE_ALLOWED_TOOLS). "
+                              "Kullanıcıya bunu PC'den yapması gerektiğini söyle.")
+                else:
+                    result = self.tools.execute(name, args)
+                messages.append({"role": "tool", "tool_name": name, "content": str(result)})
+        finally:
+            ctx.allowed = previous
+
+    def ask(self, text, session_id=None, source=None, allow_planning=True, allowed_tools=None):
         """Etkileşimli sohbet. Parametresiz çağrı eskisi gibi HUD oturumunu kullanır.
 
         Uzun görevler arka plana devredilir; konuşma beklemez.
         """
         session_id, source = self._session(session_id, source)
+        allowed = self.allowed_tools_for(source, allowed_tools)
         ready, messages = self._prepare(text, session_id, source, allow_planning)
         if ready is not None:
             self.memory.save_message("assistant", ready, session_id, source)
@@ -226,19 +272,19 @@ class JarvisBrain:
 
         answer = ""
         for _ in range(8):
-            message = self._chat(messages)
+            message = self._chat(messages, allowed)
             messages.append(message)
             calls = self._calls(message)
             if not calls:
                 answer = (message.get("content") or "").strip()
                 break
-            self._run_tools(calls, messages)
+            self._run_tools(calls, messages, allowed)
 
         answer = answer or "İşlem tamamlandı."
         self.memory.save_message("assistant", answer, session_id, source)
         return answer
 
-    def ask_stream(self, text, session_id=None, source=None, allow_planning=True):
+    def ask_stream(self, text, session_id=None, source=None, allow_planning=True, allowed_tools=None):
         """v2.3: cevabı parça parça üretir (telefonun /api/ask_stream ucu).
 
         Olaylar: {"type": "wait"} · {"type": "tool", "name", "text"} · {"type": "token", "text"} ·
@@ -246,6 +292,7 @@ class JarvisBrain:
         Araç çağrısından önceki ara metin son cevaba dahil edilmez (ask ile aynı davranış).
         """
         session_id, source = self._session(session_id, source)
+        allowed = self.allowed_tools_for(source, allowed_tools)
         ready, messages = self._prepare(text, session_id, source, allow_planning)
         if ready is not None:
             self.memory.save_message("assistant", ready, session_id, source)
@@ -263,7 +310,7 @@ class JarvisBrain:
         waited = False
         for _ in range(8):
             message = {}
-            for kind, value in self._chat_stream(messages):
+            for kind, value in self._chat_stream(messages, allowed):
                 if kind == "wait":
                     if not waited:
                         waited = True
@@ -279,20 +326,26 @@ class JarvisBrain:
                 break
             for name, _args in calls:
                 yield {"type": "tool", "name": name, "text": f"araç çalışıyor: {name}"}
-            self._run_tools(calls, messages)
+            self._run_tools(calls, messages, allowed)
 
         answer = answer or "İşlem tamamlandı."
         self.memory.save_message("assistant", answer, session_id, source)
         yield {"type": "done", "reply": answer}
 
     # ------------------------------------------------------------ arka plan görevleri
-    def _background_ask(self, prompt, task_id=None):
+    def _background_ask(self, prompt, task_id=None, allowed_tools=None):
         """Arka plan görevi kendi oturumunda (task-<id>) konuşur; sohbet geçmişini görmez/kirletmez."""
-        return self.ask(prompt, session_id=f"task-{task_id or 'bg'}", source="task", allow_planning=False)
+        return self.ask(prompt, session_id=f"task-{task_id or 'bg'}", source="task",
+                        allow_planning=False, allowed_tools=allowed_tools)
 
     def run_background(self, title, prompt):
+        kwargs = {}
+        ctx = getattr(self, "_tool_ctx", None)
+        inherited = getattr(ctx, "allowed", None) if ctx is not None else None
+        if inherited is not None:              # v2.6: telefondan başlatıldı -> aynı araç kısıtı
+            kwargs["allowed_tools"] = sorted(inherited)
         task_id = self.tasks.submit(title, self._background_ask, prompt,
-                                    retries=_cfg("BACKGROUND_MAX_RETRIES", 2))
+                                    retries=_cfg("BACKGROUND_MAX_RETRIES", 2), **kwargs)
         return f"Arka plan görevi başlatıldı. Görev ID: {task_id}"
 
     @staticmethod

@@ -3,7 +3,8 @@ requests
 psutil
 numpy
 sounddevice
-openai-whisper
+faster-whisper
+openwakeword
 pyttsx3
 moderngl
 PyOpenGL
