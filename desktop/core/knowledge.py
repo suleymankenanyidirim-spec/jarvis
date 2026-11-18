@@ -8,6 +8,7 @@
   Tamamen çevrimdışıdır; hiçbir şey internete gönderilmez.
 """
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -18,9 +19,26 @@ from pathlib import Path
 from core import turkish
 from core.paths import data_path
 
-TEXT_EXTS = {".txt", ".md", ".markdown", ".csv", ".json", ".log", ".html", ".htm", ".ini", ".yaml", ".yml"}
+DOC_EXTS = {".txt", ".md", ".markdown", ".csv", ".json", ".log", ".html", ".htm", ".ini", ".yaml", ".yml"}
+# v2.9: kod dosyaları da okunur (proje klasörlerindeki Python / Arduino / C++ kodu)
+CODE_EXTS = {".py", ".ino", ".cpp", ".c", ".h", ".hpp", ".js", ".gd", ".bat", ".ps1"}
+TEXT_EXTS = DOC_EXTS | CODE_EXTS
 PDF_EXT = ".pdf"
 UPLOAD_EXTS = TEXT_EXTS | {PDF_EXT}
+# Proje klasörlerinde atlanan klasörler ve hassas dosyalar
+SKIP_DIRS = {"libraries", "__pycache__", ".git", "node_modules", "build", "dist", ".pio", ".vscode", "data",
+             "selfheal_data", "android", "venv", ".venv", "phone_ui"}
+SKIP_FILE_RE = re.compile(r"config_local\.py$|wifi_ayarlar\.h$|secret|token|password|parola|sifre|şifre|\.db$", re.I)
+_SECRET_RE = re.compile(r"((?:pass(?:word|wd)?|sifre|şifre|parola|token|secret|api_?key)\w*\s*(?:=|:)\s*)"
+                        r"([\"'])[^\"'\n]{3,}\2", re.I)
+MAX_CODE_BYTES = 256 * 1024     # çok büyük üretilmiş kod dosyaları (ör. yazı tipi tabloları) okunmaz
+
+
+def mask_secrets(text):
+    """Proje kodundaki şifre/anahtar değerlerini gizler: WIFI_PASS = "…" -> WIFI_PASS = "***"."""
+    return _SECRET_RE.sub(lambda m: m.group(1) + m.group(2) + "***" + m.group(2), text)
+
+
 CHUNK_CHARS = 700
 README_NAME = "BENI_OKU.txt"
 README_TEXT = """JARVIS BİLGİ DEPOSU
@@ -105,8 +123,13 @@ def safe_filename(name):
 
 
 class KnowledgeBase:
-    def __init__(self, root, index_path=None, refresh_seconds=30, min_score=0.5, max_file_mb=20):
+    def __init__(self, root, index_path=None, refresh_seconds=30, min_score=0.5, max_file_mb=20, extra_dirs=()):
         self.root = Path(root).expanduser()
+        # v2.9: salt okunur proje klasörleri (C:/JARVIS, Arduino projeleri …): "@<klasör adı>/…" olarak görünür
+        self.extra_dirs = [Path(d).expanduser() for d in (extra_dirs or ())]
+        names = [d.name for d in self.extra_dirs]
+        # Aynı adlı klasörler (ör. iki ayrı "Kod") karışmasın: üst klasörün adı da eklenir
+        self._labels = {d: (f"{d.parent.name}-{d.name}" if names.count(d.name) > 1 else d.name) for d in self.extra_dirs}
         self.index_path = Path(index_path) if index_path else data_path("knowledge_index.db")
         self.refresh_seconds = float(refresh_seconds)
         self.min_score = float(min_score)
@@ -146,11 +169,28 @@ class KnowledgeBase:
         except ValueError:
             return path.name
 
+    def _walk(self, base, extra):
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") and (not extra or d.lower() not in SKIP_DIRS)]
+            for name in filenames:
+                ext = Path(name).suffix.lower()
+                if ext not in TEXT_EXTS and ext != PDF_EXT:
+                    continue
+                if name == README_NAME or name.startswith("."):
+                    continue
+                if extra and (SKIP_FILE_RE.search(name) or ext in (".pdf",)):
+                    continue
+                yield Path(dirpath) / name
+
     def _documents(self):
-        for p in self.root.rglob("*"):
-            if p.is_file() and p.name != README_NAME and (p.suffix.lower() in TEXT_EXTS or p.suffix.lower() == PDF_EXT):
-                if not any(part.startswith(".") for part in p.relative_to(self.root).parts):
-                    yield p
+        """(yol, depo içi ad, proje klasörü mü) üçlüleri."""
+        for p in self._walk(self.root, False):
+            yield p, self._rel(p), False
+        for base in self.extra_dirs:
+            if not base.is_dir():
+                continue
+            for p in self._walk(base, True):
+                yield p, "@" + self._labels[base] + "/" + p.relative_to(base).as_posix(), True
 
     # ------------------------------------------------------------------ dizin
     def refresh(self, force=False):
@@ -165,8 +205,7 @@ class KnowledgeBase:
             with self._db() as db:
                 known = {row[0]: (row[1], row[2]) for row in db.execute("SELECT path, mtime, size FROM files")}
                 seen = set()
-                for p in self._documents():
-                    rel = self._rel(p)
+                for p, rel, extra in self._documents():
                     seen.add(rel)
                     try:
                         st = p.stat()
@@ -174,7 +213,10 @@ class KnowledgeBase:
                         continue
                     if known.get(rel) == (st.st_mtime, st.st_size):
                         continue
-                    text = read_document(p) if st.st_size <= self.max_file_bytes else ""
+                    limit = MAX_CODE_BYTES if p.suffix.lower() in CODE_EXTS else self.max_file_bytes
+                    text = read_document(p) if st.st_size <= limit else ""
+                    if extra:
+                        text = mask_secrets(text)
                     db.execute("DELETE FROM chunks WHERE path=?", (rel,))
                     for i, chunk in enumerate(chunk_text(text)):
                         db.execute("INSERT INTO chunks(path, ord, text, forms) VALUES(?,?,?,?)",
@@ -287,5 +329,9 @@ def from_config(cfg):
     root = Path(str(cfg("KNOWLEDGE_DIR", "D:/JARVIS_Bilgi") or "")).expanduser()
     if not str(root) or not root.anchor or not Path(root.anchor).exists():
         root = data_path("bilgi")
+    extra = cfg("KNOWLEDGE_EXTRA_DIRS", []) or []
+    if isinstance(extra, str):
+        extra = [x for x in extra.split(";") if x.strip()]
     return KnowledgeBase(root, refresh_seconds=cfg("KNOWLEDGE_REFRESH_SECONDS", 30),
-                         min_score=cfg("KNOWLEDGE_MIN_SCORE", 0.5), max_file_mb=cfg("KNOWLEDGE_MAX_FILE_MB", 20))
+                         min_score=cfg("KNOWLEDGE_MIN_SCORE", 0.5), max_file_mb=cfg("KNOWLEDGE_MAX_FILE_MB", 20),
+                         extra_dirs=extra)

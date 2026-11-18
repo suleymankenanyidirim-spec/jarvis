@@ -8,6 +8,7 @@
   hey_jarvis modeli); kurulamazsa ya da WAKE_WORD_ENGINE = "whisper" ise kısa parçalar whisper ile yazıya
   dökülüp "jarvis/carvis/cervis…" aranır. JARVIS konuşurken ve bas-konuş basılıyken uyandırma dinlenmez.
 """
+import collections
 import math
 import queue
 import re
@@ -94,6 +95,37 @@ class SilenceDetector:
         if self.silent_for + self.EPS >= self.silence_seconds:
             return "silence"
         return None
+
+
+# ------------------------------------------------------------------ v2.8: tanıma kalitesi
+# Whisper sessizlikte ya da gürültüde Türkçe altyazı kalıplarını "duyar"; bunlar atılır.
+HALLUCINATIONS = (
+    "altyazı m.k", "altyazı", "izlediğiniz için teşekkür", "izlediğiniz için teşekkürler",
+    "abone olmayı unutmayın", "sesli betimleme",
+)
+
+
+def clean_transcript(text):
+    t = " ".join(str(text or "").split())
+    low = t.replace("I", "ı").replace("İ", "i").lower().strip(" .!…")
+    if not low:
+        return ""
+    for h in HALLUCINATIONS:
+        h = h.strip(" .!")
+        if low == h or (low.startswith(h) and len(low) - len(h) < 4):
+            return ""
+    return t
+
+
+def prepare_audio(audio):
+    """Kısık mikrofonda sesi yükseltir (tepe ~0.9), çok gürültülü kırpmayı önler. numpy dizisi değilse dokunmaz."""
+    if np is None or not isinstance(audio, np.ndarray) or not audio.size:
+        return audio
+    audio = audio.astype(np.float32, copy=False)
+    peak = float(np.max(np.abs(audio)))
+    if 0.0005 < peak < 0.5:
+        audio = audio * min(0.9 / peak, float(_cfg("VOICE_MAX_GAIN", 8.0)))
+    return audio
 
 
 # ------------------------------------------------------------------ uyandırma sözcüğü
@@ -229,6 +261,8 @@ class VoiceListener:
         self._wake_carry = None
         self._wake_thread = None
         self._last_wake = 0.0
+        # v2.8: mikrofon açık kalırsa (VOICE_KEEP_MIC_OPEN) tuşa basmadan önceki ~0,5 sn de kayda girer
+        self._preroll = collections.deque()
 
     # ---------------------------------------------------------- model
     def _create(self, device, compute_type):
@@ -253,12 +287,20 @@ class VoiceListener:
         print(f"[SES] faster-whisper '{self.model_name}' hazır ({self.device}, {self.compute_type}).")
 
     def _run(self, audio):
-        segments, _info = self.model.transcribe(
-            audio, language="tr", task="transcribe",
+        kw = dict(
+            language="tr", task="transcribe",
             beam_size=int(_cfg("WHISPER_BEAM_SIZE", 5)),
             vad_filter=bool(_cfg("WHISPER_VAD_FILTER", True)),
             condition_on_previous_text=False,
         )
+        # v2.8: konuşma sonunu kesmeyen VAD ayarı ve Türkçe bağlam ipucu (özel adlar doğru yazılsın)
+        if kw["vad_filter"]:
+            kw["vad_parameters"] = {"min_silence_duration_ms": int(_cfg("WHISPER_VAD_MIN_SILENCE_MS", 500)),
+                                    "speech_pad_ms": int(_cfg("WHISPER_VAD_SPEECH_PAD_MS", 400))}
+        prompt = str(_cfg("WHISPER_INITIAL_PROMPT", "") or "").strip()
+        if prompt:
+            kw["initial_prompt"] = prompt
+        segments, _info = self.model.transcribe(prepare_audio(audio), **kw)
         return "".join(seg.text for seg in segments).strip()
 
     def transcribe(self, audio):
@@ -270,6 +312,7 @@ class VoiceListener:
                 raise
             self._fallback_cpu(exc)       # ör. cudnn_ops_infer64_8.dll yok: ilk tanımada ortaya çıkar
             text = self._run(audio)
+        text = clean_transcript(text)
         return text or None
 
     # ---------------------------------------------------------- mikrofon akışı
@@ -301,11 +344,17 @@ class VoiceListener:
                 reason = det.update(rms, frames / float(self.sample_rate))
                 if reason:
                     self._auto_stop(reason)
-        elif self.wake_active:
-            try:
-                self._wake_queue.put_nowait(indata.copy())
-            except queue.Full:
-                pass
+        else:
+            if self._keep_open():
+                self._preroll.append(indata.copy())
+                keep = max(0, int(float(_cfg("VOICE_PREROLL_SECONDS", 0.5)) * self.sample_rate / max(1, frames)))
+                while len(self._preroll) > keep:
+                    self._preroll.popleft()
+            if self.wake_active:
+                try:
+                    self._wake_queue.put_nowait(indata.copy())
+                except queue.Full:
+                    pass
 
     def _auto_stop(self, reason):
         with self._lock:
@@ -331,9 +380,19 @@ class VoiceListener:
             max_seconds=_cfg("VOICE_MAX_RECORD_SECONDS", 30.0),
         )
 
-    def _begin(self, autostop):
+    @staticmethod
+    def _keep_open():
+        return bool(_cfg("VOICE_KEEP_MIC_OPEN", False))
+
+    def open_mic(self):
+        """VOICE_KEEP_MIC_OPEN ise mikrofonu baştan açar (bas-konuşta ilk hece kaçmasın)."""
+        if self._keep_open():
+            self._ensure_stream()
+
+    def _begin(self, autostop, preroll=False):
         with self._lock:
-            self.chunks = []
+            self.chunks = list(self._preroll) if preroll else []
+            self._preroll.clear()
             self._ready = False
             self._detector = self._new_detector() if autostop else None
             self.recording = True
@@ -342,9 +401,13 @@ class VoiceListener:
     # ---------------------------------------------------------- bas-konuş
     def start(self):
         self.load()
-        self._begin(bool(_cfg("VOICE_SILENCE_AUTOSTOP_PTT", False)))
+        self._begin(bool(_cfg("VOICE_SILENCE_AUTOSTOP_PTT", False)), preroll=True)
 
     def stop(self):
+        # v2.8: tuş bırakıldıktan sonra kısa bir süre daha kaydet (son hece kesilmesin)
+        tail = float(_cfg("VOICE_PTT_TAIL_SECONDS", 0.0) or 0.0)
+        if self.recording and tail > 0 and self.stream is not None:
+            time.sleep(min(tail, 1.5))
         with self._lock:
             if not (self.recording or self._ready):
                 return None
@@ -353,7 +416,7 @@ class VoiceListener:
             self._detector = None
             self.level = 0.0
             chunks, self.chunks = self.chunks, []
-        if not self.wake_active:
+        if not self.wake_active and not self._keep_open():
             self._close_stream()
         if not chunks:
             return None
@@ -429,7 +492,7 @@ class VoiceListener:
 
     def stop_wake(self):
         self.wake_active = False
-        if not self.recording:
+        if not self.recording and not self._keep_open():
             self._close_stream()
 
     def close(self):
@@ -439,3 +502,7 @@ class VoiceListener:
                 self.stop()
             except Exception:
                 pass
+        try:
+            self._close_stream()          # JARVIS kapanırken mikrofon her durumda bırakılır
+        except Exception:
+            pass

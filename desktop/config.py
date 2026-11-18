@@ -154,6 +154,15 @@ WHISPER_DEVICE = "auto"             # "auto" (CUDA varsa ekran kartı) / "cuda" 
 WHISPER_COMPUTE_TYPE = ""           # boş: cuda -> float16, cpu -> int8
 WHISPER_BEAM_SIZE = 5
 WHISPER_VAD_FILTER = True           # konuşma olmayan bölümleri at
+# v2.9: daha iyi anlama
+WHISPER_INITIAL_PROMPT = ("JARVIS ile Türkçe konuşma. Jarvis, kask, ESP32, Arduino, Game Boy, Wi-Fi, Bluetooth, "
+                          "Tailscale, Ollama, GitHub, Python, Spotify, Chrome, Discord, YouTube.")
+WHISPER_VAD_MIN_SILENCE_MS = 500    # cümle içindeki kısa duraklamalarda kesme
+WHISPER_VAD_SPEECH_PAD_MS = 400     # konuşmanın başı/sonu kırpılmasın
+VOICE_KEEP_MIC_OPEN = True          # mikrofon açık kalır: BOŞLUK'a basmadan önceki 0,5 sn de kayda girer
+VOICE_PREROLL_SECONDS = 0.5
+VOICE_PTT_TAIL_SECONDS = 0.4        # BOŞLUK bırakıldıktan sonra 0,4 sn daha kayıt (son hece kesilmesin)
+VOICE_MAX_GAIN = 8.0                # kısık mikrofonda ses en fazla 8 kat yükseltilir
 
 # JARVIS v2.6 — "Jarvis" uyandırma sözcüğü (varsayılan kapalı; Ctrl+Space bas-konuş her zaman çalışır)
 WAKE_WORD_ENABLED = False
@@ -207,6 +216,11 @@ KNOWLEDGE_MAX_HITS = 4
 KNOWLEDGE_REFRESH_SECONDS = 30      # klasör en sık bu aralıkla yeniden taranır
 KNOWLEDGE_MAX_FILE_MB = 20          # daha büyük dosyalar okunmaz
 KNOWLEDGE_MAX_UPLOAD_MB = 10        # telefondan gönderilebilecek en büyük dosya
+# v2.9: depo bunlara ek olarak bu proje klasörlerini de SALT OKUNUR tarar (kod + açıklamalar). Kişisel yollar
+# olduğu için config_local.py'ye yaz. libraries/, data/, config_local.py, wifi_ayarlar.h ve şifre geçen dosyalar
+# atlanır; koddaki şifre değerleri ("…pass… = '…'") "***" olarak gizlenir. Örnek:
+# KNOWLEDGE_EXTRA_DIRS = ["C:/JARVIS", "C:/Users/<sen>/OneDrive/Masaüstü/01 Projeler/El Konsolu (GameBoy)/Kod"]
+KNOWLEDGE_EXTRA_DIRS = []
 # Tailscale serve (https) arkasında: istekler 127.0.0.1'den gelir; gerçek istemci X-Forwarded-For'dan okunur.
 PHONE_TRUST_LOCAL_PROXY = True
 # İnternetten bağlantı: "tailscale serve --bg 5000" sonrası verilen https adresi (ör. https://pc.tailXXXX.ts.net).

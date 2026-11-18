@@ -427,6 +427,12 @@ class SadeHUD:
         self.queue = deque()
         self.input_text = ""
         self.typing = False
+        # v2.8: yazı kutusu (TEXTINPUT ile Türkçe karakterler, imleç, geçmiş, Ctrl+V) + "✎ YAZ" düğmesi
+        from interface.textbox import TextBox
+        self.box = TextBox()
+        self._ignore_text_until = 0.0
+        self.mouse = (-1.0, -1.0)
+        self.write_btn = (W - 120, H - 66, 92, 32)
         self.show_settings = False
         self.settings_rects = []
         self.space_held = False
@@ -797,6 +803,12 @@ class SadeHUD:
             self.voice_error = True
             print("VOICE:", exc)
             return
+        # v2.8: mikrofon baştan açık kalır (VOICE_KEEP_MIC_OPEN): bas-konuşta ilk hece kaçmaz
+        try:
+            if hasattr(self.listener, "open_mic"):
+                self.listener.open_mic()
+        except Exception as exc:
+            print("[SES] Mikrofon açılamadı:", exc)
         # v2.6: "Jarvis" uyandırma sözcüğü (config.WAKE_WORD_ENABLED). Başlatılamazsa bas-konuş yine çalışır.
         if getattr(config, "WAKE_WORD_ENABLED", False) and hasattr(self.listener, "start_wake"):
             try:
@@ -1314,6 +1326,8 @@ class SadeHUD:
     def draw_texts(self, st, now):
         if self.typing:
             self.draw_input(now)
+        elif not self.show_settings:
+            self.draw_write_button()
 
         frame = self._subtitle_frame(now, st == "speaking")
         if frame and not self.show_settings and not self.typing:
@@ -1337,14 +1351,94 @@ class SadeHUD:
 
     def draw_input(self, now):
         y = H - 96
-        self.lines([(W / 2 - 300, y, W / 2 + 300, y)], 1.0, _rgba(CYAN, 0.45))
-        shown = self.input_text
-        while shown and self.text_width(shown, 20) > 580:
-            shown = shown[1:]
+        self.rect(W / 2 - 320, y - 46, 640, 46, _rgba(CYAN, 0.05))
+        self.lines([(W / 2 - 320, y, W / 2 + 320, y)], 1.0, _rgba(CYAN, 0.55))
         caret = "|" if int(now * 2) % 2 == 0 else " "
-        self.text((shown or "") + caret, W / 2, y - 34, 20, (0.88, 0.97, 1.0), 0.92, align="c")
-        self.text("ENTER gönder  ·  ESC kapat  ·  CTRL+BOŞLUK konuş", W / 2, y + 10, 11,
-                  TXT, 0.30, align="c", spacing=0.5)
+        if self.box.text:
+            shown = self.box.view(lambda s: self.text_width(s, 20) <= 600, caret)
+            self.text(shown, W / 2, y - 34, 20, (0.88, 0.97, 1.0), 0.95, align="c")
+        else:
+            self.text(caret + "JARVIS'e yaz…", W / 2, y - 34, 20, TXT, 0.35, align="c")
+        self.text("ENTER gönder  ·  ESC kapat  ·  YUKARI OK önceki mesaj  ·  CTRL+V yapıştır  ·  CTRL+BOŞLUK konuş",
+                  W / 2, y + 10, 11, TXT, 0.30, align="c", spacing=0.5)
+
+    def _in_write_btn(self, mx, my):
+        bx, by, bw, bh = self.write_btn
+        return bx <= mx <= bx + bw and by <= my <= by + bh
+
+    def draw_write_button(self):
+        """Ekranı bozmayan, soluk "✎ YAZ" düğmesi; fare üstüne gelince belirginleşir. T tuşuyla da açılır."""
+        bx, by, bw, bh = self.write_btn
+        hover = self._in_write_btn(*self.mouse)
+        self.polyline([(bx, by), (bx + bw, by), (bx + bw, by + bh), (bx, by + bh)], 1.0,
+                      _rgba(CYAN, 0.75 if hover else 0.18), closed=True)
+        if hover:
+            self.rect(bx, by, bw, bh, _rgba(CYAN, 0.10))
+        self.text("YAZ  ·  T", bx + bw / 2, by + bh / 2 - 8, 12, TXT, 0.85 if hover else 0.30,
+                  align="c", spacing=1.5)
+
+    # ------------------------------------------------------------ yazı kutusu
+    def open_typing(self):
+        self.typing = True
+        self.box.clear()
+        self._ignore_text_until = time.monotonic() + 0.2   # kutuyu açan "t" harfi yazılmasın
+        try:
+            pygame.key.start_text_input()
+        except Exception:
+            pass
+
+    def close_typing(self):
+        self.typing = False
+
+    def _paste(self):
+        text = ""
+        try:
+            import pyperclip
+            text = pyperclip.paste() or ""
+        except Exception:
+            try:
+                raw = pygame.scrap.get(pygame.SCRAP_TEXT) or b""
+                text = raw.decode("utf-8", "ignore").replace("\x00", "")
+            except Exception:
+                text = ""
+        self.box.insert(text)
+
+    def _text_input(self, text):
+        if not self.typing or self.space_held:
+            return
+        if time.monotonic() < self._ignore_text_until and text in ("t", "T"):
+            self._ignore_text_until = 0.0
+            return
+        self.box.insert(text)
+
+    def _typing_key(self, key, ctrl):
+        box = self.box
+        if key == pygame.K_ESCAPE:
+            self.close_typing()
+        elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            text = box.submit()
+            self.close_typing()
+            self.send(text)
+        elif key == pygame.K_BACKSPACE:
+            box.backspace(word=ctrl)
+        elif key == pygame.K_DELETE:
+            box.delete()
+        elif key == pygame.K_LEFT:
+            box.left(word=ctrl)
+        elif key == pygame.K_RIGHT:
+            box.right(word=ctrl)
+        elif key == pygame.K_HOME:
+            box.home()
+        elif key == pygame.K_END:
+            box.end()
+        elif key == pygame.K_UP:
+            box.history_prev()
+        elif key == pygame.K_DOWN:
+            box.history_next()
+        elif key == pygame.K_v and ctrl:
+            self._paste()
+        elif key == pygame.K_SPACE and ctrl:
+            self._ptt_down()
 
     # --------------------------------------------------------- ayar katmanı
     def _button(self, x, y, w, h, label, active, kind, value):
@@ -1469,12 +1563,18 @@ class SadeHUD:
             self.running = False
         elif event.type == pygame.KEYDOWN:
             self._keydown(event)
+        elif event.type == pygame.TEXTINPUT:
+            self._text_input(event.text)
         elif event.type == pygame.KEYUP and event.key == pygame.K_SPACE:
             self._ptt_up()
-        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.show_settings:
+        elif event.type == pygame.MOUSEMOTION:
+            self.mouse = self._to_logical(event.pos)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = self._to_logical(event.pos)
-            if not self._settings_click(mx, my):
-                pass
+            if self.show_settings:
+                self._settings_click(mx, my)
+            elif not self.typing and self._in_write_btn(mx, my):
+                self.open_typing()
 
     def _keydown(self, event):
         key = event.key
@@ -1483,18 +1583,8 @@ class SadeHUD:
             self.toggle_fullscreen()
             return
         if self.typing:
-            if key == pygame.K_ESCAPE:
-                self.typing = False
-            elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                text = self.input_text
-                self.typing = False
-                self.send(text)
-            elif key == pygame.K_BACKSPACE:
-                self.input_text = self.input_text[:-1]
-            elif key == pygame.K_SPACE and ctrl:
-                self._ptt_down()
-            elif event.unicode and event.unicode.isprintable() and not self.space_held:
-                self.input_text += event.unicode
+            # v2.8: harfler TEXTINPUT olayından gelir (Türkçe ve AltGr karakterleri doğru gelsin)
+            self._typing_key(key, ctrl)
             return
         if self.show_settings:
             if key == pygame.K_ESCAPE:
@@ -1509,8 +1599,7 @@ class SadeHUD:
         elif key == pygame.K_SPACE:
             self._ptt_down()
         elif key == pygame.K_t:
-            self.typing = True
-            self.input_text = ""
+            self.open_typing()
         elif key == pygame.K_m:
             self.toggle_mode()
 

@@ -1,4 +1,4 @@
-# J.A.R.V.I.S. v2.8
+# J.A.R.V.I.S. v2.9
 
 Türkçe konuşan kişisel yapay zeka asistanı: Windows'ta çalışan masaüstü JARVIS (Ollama, HUD, ses, araçlar, Iron Man kaskı)
 ve ona bağlanan **telefon uygulaması**.
@@ -244,5 +244,5 @@ npm run serve                                # web sürümünü yerelde dene: ht
 Yerelde imza ortam değişkenleri yoksa debug APK derlenir. GitHub Actions'taki APK sabit anahtarla imzalı release'tir
 (yukarıda *Android imzalama (release APK)*).
 
-Sürüm geçmişi: `desktop/CHANGELOG_v2.8.md`, `desktop/CHANGELOG_v2.7.md` … `desktop/CHANGELOG_v2.2.md`, `desktop/CHANGELOG_v2.1.md`,
+Sürüm geçmişi: `desktop/CHANGELOG_v2.9.md`, `desktop/CHANGELOG_v2.8.md`, `desktop/CHANGELOG_v2.7.md` … `desktop/CHANGELOG_v2.2.md`, `desktop/CHANGELOG_v2.1.md`,
 `desktop/CHANGELOG_v1.4.md`, `desktop/CHANGELOG_v1.3.md`, `desktop/CHANGELOG_v1.2.md`.
