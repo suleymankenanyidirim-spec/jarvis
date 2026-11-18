@@ -16,3 +16,6 @@ selfheal_ayarlar.json
 *.keystore
 *.p12
 *.b64
+
+# Kask ESP32 WiFi şifresi: yalnızca PC'de kalır
+wifi_ayarlar.h

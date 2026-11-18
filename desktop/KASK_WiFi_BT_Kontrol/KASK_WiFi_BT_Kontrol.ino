@@ -38,8 +38,18 @@
 #endif
 
 // ---- WiFi bilgileri ----
-const char* ssid     = "WIFI_ADIN";
-const char* password = "WIFI_SIFREN";
+// Şifre bu dosyaya yazılmaz (depo GitHub'da herkese açık). Aynı klasörde wifi_ayarlar.h oluştur:
+//   wifi_ayarlar.ornek.h dosyasını wifi_ayarlar.h olarak kopyala ve kendi ağ adını/şifreni yaz.
+//   wifi_ayarlar.h .gitignore'da; GitHub'a hiç gitmez.
+#if __has_include("wifi_ayarlar.h")
+#include "wifi_ayarlar.h"
+#else
+#warning "wifi_ayarlar.h yok: WiFi bağlanmaz, yalnızca Bluetooth çalışır. wifi_ayarlar.ornek.h'yi kopyala."
+#define WIFI_AG_ADI "WIFI_ADIN"
+#define WIFI_SIFRE  "WIFI_SIFREN"
+#endif
+const char* ssid     = WIFI_AG_ADI;
+const char* password = WIFI_SIFRE;
 
 // ---- Bluetooth cihaz adi ----
 const char* BT_NAME = "JARVIS_KASK";
