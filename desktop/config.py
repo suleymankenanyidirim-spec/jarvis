@@ -197,8 +197,15 @@ PHONE_ALLOWED_TOOLS = [
     "save_memory", "forget_memory", "helmet_control", "run_background_task", "list_background_tasks",
     "get_background_task", "council_consult", "get_jarvis_status", "start_planned_task",
     "browser_search", "browser_visit", "clipboard_copy", "clipboard_read", "copy_selected_text",
-    "knowledge_search", "knowledge_save",
+    "knowledge_search", "knowledge_save", "get_weather",
 ]
+
+# JARVIS v3.0 — Görsel kartlar (HUD): ana görsel sağa kayar, ortada/solda pencere açılır, konuşma bitince kapanır
+HOME_ENABLED = True                 # akıllı ev kartı ve komutları (plan: data/ev.json, durum: data/ev_durum.json)
+VISUAL_WEATHER = True               # hava durumu sorusunda Open-Meteo'dan gerçek veri + hava kartı
+VISUAL_INFO = True                  # "… kimdir / nedir / tarihi" sorusunda Vikipedi özeti + çizimli bilgi penceresi
+VISUAL_KEYBOARD = True              # cevapta kısayol geçerse klavye kartı (söylendiği anda tuşlar yanar)
+CARD_HOLD_SECONDS = 2.5             # konuşma bittikten sonra kart bu kadar ekranda kalır
 
 # JARVIS v2.8 — Yerel modeli daha akıllı kullanma (ücretsiz, her şey PC'de kalır)
 OLLAMA_NUM_CTX = 8192               # bağlam penceresi; küçükse talimat/araç/hafıza baştan kesilir (RTX 4060 8 GB'a sığar)

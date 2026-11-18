@@ -433,6 +433,10 @@ class SadeHUD:
         self._ignore_text_until = 0.0
         self.mouse = (-1.0, -1.0)
         self.write_btn = (W - 120, H - 66, 92, 32)
+        # v3.0: görsel kartlar (interface/cards.py)
+        from interface.cards import CardLayer
+        self.cards = CardLayer(W, H, hold=_cfg("CARD_HOLD_SECONDS", 2.5))
+        self._xf = None
         self.show_settings = False
         self.settings_rects = []
         self.space_held = False
@@ -648,6 +652,9 @@ class SadeHUD:
 
     def _emit(self, pos, color):
         pos = np.asarray(pos, "f4").reshape(-1, 2)
+        xf = getattr(self, "_xf", None)
+        if xf is not None:                      # v3.0: ana görselin kayma/küçülme dönüşümü
+            pos = pos * xf[0] + np.asarray(xf[1:], "f4")
         arr = np.empty((len(pos), 6), "f4")
         arr[:, :2] = pos
         arr[:, 2:] = color
@@ -705,6 +712,9 @@ class SadeHUD:
         self._emit(np.stack(q, 1).reshape(-1, 2), np.repeat(np.asarray(cols, "f4"), 6, 0))
 
     def glow(self, cx, cy, r, color, power=2.0):
+        xf = getattr(self, "_xf", None)
+        if xf is not None:
+            cx, cy, r = cx * xf[0] + xf[1], cy * xf[0] + xf[2], r * xf[0]
         self._flush()
         self.ctx.blend_func = self.ADD
         self.glow_prog["resolution"].value = (W, H)
@@ -894,7 +904,13 @@ class SadeHUD:
 
     def _ask(self, text):
         try:
-            answer = self.brain.ask(text)
+            # v3.0: cevapla birlikte görsel kartlar (hava, ev, kask, bilgi, klavye)
+            ask_v = getattr(self.brain, "ask_with_visuals", None)
+            if callable(ask_v) and _cfg("VISUAL_CARDS", True):
+                answer, cards = ask_v(text)
+                answer = (answer, cards)
+            else:
+                answer = self.brain.ask(text)
             self.llm_online = True
             self.queue.append(("ANSWER", answer))
         except Exception as exc:
@@ -925,8 +941,13 @@ class SadeHUD:
                 if kind == "ERROR":
                     self.show_subtitle("Hata: " + value, speak_sync=False)
                 else:
+                    cards = []
+                    if isinstance(value, tuple):
+                        value, cards = value
                     self.show_subtitle(value)
                     self.speaker.speak(value)
+                    if cards:
+                        self.cards.show(cards[0], text=value)
 
     def state(self):
         if self.debug_state:
@@ -1023,10 +1044,19 @@ class SadeHUD:
         ctx.clear(0.0, 0.0, 0.0, 1.0)
         self._add = False
         self._set_add(True)
+        # v3.0: kart açıkken ana görsel sağa kayar ve küçülür (çizim koduna dokunmadan, dönüşümle)
+        spk = self.speaker
+        speaking = bool(getattr(spk, "speaking", False))
+        pos = getattr(spk, "speech_pos", None) if getattr(spk, "speech_text", None) == self.cards.text else None
+        self.cards.update(speaking, pos)
+        s, tx, ty = self.cards.orb_transform(W * 0.5, H * (0.46 if self.mode == "halka" else 0.47))
+        self._xf = (s, tx, ty) if s < 0.999 else None
         if self.mode == "halka":
             self.draw_ring(m)
         else:
             self.draw_core(m)
+        self._xf = None
+        self.cards.draw_shapes(self, now)
         self._flush()
 
         if self.post_ok:
@@ -1040,6 +1070,7 @@ class SadeHUD:
         ctx.enable(moderngl.BLEND)
         self._add = True
         self._set_add(False)
+        self.cards.draw_texts(self, now)
         self.draw_texts(st, now)
         if self.show_settings:
             self._flush_text()

@@ -29,6 +29,18 @@ def set_profile(name):
     return profile
 
 
+def sentence_offsets(text, sentences):
+    """Her cümlenin metindeki başlangıç karakteri (bulunamazsa önceki cümlenin sonu)."""
+    out, cur = [], 0
+    for s in sentences:
+        i = text.find(s.strip()[:20], cur) if s.strip() else -1
+        if i < 0:
+            i = cur
+        out.append(i)
+        cur = i + len(s.strip())
+    return out
+
+
 class VoiceSpeaker:
     def __init__(self, prewarm=True):
         import pygame
@@ -39,6 +51,9 @@ class VoiceSpeaker:
         # level_live False ise seviye bilinmiyor demektir (ör. pyttsx3 yedeği): HUD tahmini dalga kullanır.
         self.level = 0.0
         self.level_live = False
+        # v3.0: o an söylenen yer (konuşulan metindeki karakter konumu). HUD klavye kartı tuşları buna göre yakar.
+        self.speech_text = ""
+        self.speech_pos = 0.0
         pygame.mixer.init()
         if prewarm:
             from voice import tts
@@ -52,40 +67,49 @@ class VoiceSpeaker:
         from voice import tts
         with self.lock:
             self.speaking = True
+            self.speech_text, self.speech_pos = text, 0.0
             try:
                 sentences = tts.split_sentences(text) or [text]
+                offsets = sentence_offsets(text, sentences)
                 workers = max(1, int(tts.cfg("TTS_PREFETCH") or 2))
                 # Cümleler sırayla kuyruğa girer: ilki hemen üretilir, çalınırken
                 # sonrakiler arka planda hazırlanır.
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     jobs = [pool.submit(tts.synthesize, s) for s in sentences]
-                    for sentence, job in zip(sentences, jobs):
+                    for sentence, job, start in zip(sentences, jobs, offsets):
+                        self.speech_pos = float(start)
                         try:
                             audio, fmt, _engine = job.result()
                         except Exception as exc:
                             print("[SES] Seslendirilemedi, doğrudan pyttsx3:", exc)
                             self._fallback(sentence)
                             continue
+                        self._cur = (start, len(sentence))
                         self._play(audio, fmt)
+                    self.speech_pos = float(len(text))
             finally:
                 self.speaking = False
                 self.level = 0.0
                 self.level_live = False
 
     def _play(self, audio, fmt):
+        start, length = getattr(self, "_cur", (0, 0))
         music = self.pygame.mixer.music
         fd, path = tempfile.mkstemp(suffix="." + fmt)
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(audio)
             env = self._envelope(path)
+            duration = len(env) * self.ENV_STEP if env is not None else max(0.5, length / 14.0)
             music.load(path)
             music.play()
             self.level_live = env is not None
             while music.get_busy():
+                pos_s = max(0.0, music.get_pos() / 1000.0)
                 if env is not None:
-                    i = int(music.get_pos() / (self.ENV_STEP * 1000))
+                    i = int(pos_s / self.ENV_STEP)
                     self.level = float(env[i]) if 0 <= i < len(env) else 0.0
+                self.speech_pos = start + min(1.0, pos_s / duration) * length
                 self.pygame.time.wait(20)
             self.level = 0.0
         except Exception as exc:

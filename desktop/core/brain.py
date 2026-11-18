@@ -5,7 +5,9 @@ import threading
 import requests
 
 from config import OLLAMA_URL, MODEL, SYSTEM_PROMPT
+from core import visuals
 from core.memory import VALID_SOURCES, MemoryStore
+from core.visuals import extract_location, info_topic, is_info_question, is_weather_question
 from core.tools import PHONE_BLOCKED_BY_DEFAULT, TOOL_NAMES, TOOLS, ToolManager
 from core.background import BackgroundTaskManager
 from core.council import AICouncil
@@ -69,6 +71,7 @@ TOOL_GROUPS = (
      ("run_background_task", "list_background_tasks", "get_background_task", "start_planned_task")),
     (r"konsey|uzman|danış", ("council_consult",)),
     (r"güncelle", ("stage_self_update",)),
+    (r"hava\s*(durum|nasıl)|kaç\s*derece|yağmur|\bkar\s*yağ|sıcaklık", ("get_weather",)),
 )
 _THINK_RE = re.compile(r"\bneden\b|\bniçin\b|\bniye\b|\bnasıl\b|açıkla|karşılaştır|hesapla|analiz|\bkod|program|"
                        r"\bhata|\bfark|\bplan|öner|strateji|mantık|ispat|çöz|\d+\s*[-+*/x×]\s*\d+")
@@ -137,6 +140,10 @@ _QUESTION_RE = re.compile(r"\?\s*$|\b(nedir|kimdir|ne zaman|nerede|nereden|kaç|
                           r"kim|ne demek|anlamı|tarihi|fiyatı|hakkında|bilgi ver|anlat)\b")
 
 
+_HELMET_RE = re.compile(r"\bkask\w*\s+(?:\w+\s+){0,2}?(aç|kapat|durum|açık\s*mı|kapalı\s*mı)"
+                        r"|\b(aç|kapat)\w*\s+kask")
+
+
 def creator_answer():
     return _cfg("CREATOR_ANSWER",
                 "Slov Studio — Made in Türkiye. Süleyman Kenan Yıldırım tarafından yapılmıştır.")
@@ -161,6 +168,12 @@ class JarvisBrain:
         from core.knowledge import from_config
         self.knowledge = from_config(_cfg)
         self.tools.knowledge = self.knowledge
+        # v3.0: görsel kartlar — akıllı ev (data/ev.json), hava durumu (Open-Meteo), bilgi penceresi (Vikipedi)
+        from core.home import Home
+        self.home = Home() if _cfg("HOME_ENABLED", True) else None
+        self.weather_enabled = bool(_cfg("VISUAL_WEATHER", True))
+        self.wiki_enabled = bool(_cfg("VISUAL_INFO", True))
+        self.direct_helmet = True          # "kaskı aç/kapat" modele gitmeden helmet_control'e
         self.tools.background_runner = self.run_background
         self.tools.planned_runner = self.start_planned_task
         self.tools.task_lister = self.task_status
@@ -324,6 +337,20 @@ class JarvisBrain:
         saved = self._knowledge_command(text, source)
         if saved:
             return saved, None
+        helmet = self._helmet_command(text, source)   # v3.0: kask komutu da doğrudan (küçük model aracı kaçırıyordu)
+        if helmet:
+            return helmet, None
+        home = getattr(self, "home", None)            # v3.0: ev komutu modele gitmeden işlenir, ev kartı açılır
+        if home is not None:
+            try:
+                handled = home.handle(text)
+            except Exception as exc:
+                handled = (f"Ev sistemine ulaşamadım: {exc}", None)
+            if handled:
+                reply, card = handled
+                if card:
+                    self._add_visual(card)
+                return reply, None
         if allow_planning and _cfg("AUTO_PLANNER", True) and self._looks_like_long_task(text):
             return self.start_planned_task("Otomatik görev: " + text[:70], text), None
         return None, [
@@ -331,6 +358,29 @@ class JarvisBrain:
             {"role": "system", "content": self._context(text, session_id)},
             {"role": "user", "content": text},
         ]
+
+    def _helmet_command(self, text, source):
+        """"kaskı aç / kapat / kask açık mı" -> helmet_control doğrudan çalışır, kask kartı açılır."""
+        low = _fold(text)
+        if not getattr(self, "direct_helmet", False) or not _HELMET_RE.search(low):
+            return None
+        allowed = self.allowed_tools_for(source)
+        if allowed is not None and "helmet_control" not in allowed:
+            return None
+        if re.search(r"açık\s*mı|kapalı\s*mı|durum", low):
+            action, verb = "durum", "Kask durumu"
+        elif re.search(r"kapat", low):
+            action, verb = "kapat", "Kaskı kapatıyorum"
+        else:
+            action, verb = "ac", "Kaskı açıyorum"
+        result = str(self.tools.execute("helmet_control", {"action": action}))
+        card = visuals.helmet_visual(result if action == "durum" else ("açık" if action == "ac" else "kapalı"))
+        if re.search(r"yapılandırılmamış|hata|ulaşılamadı", _fold(result)):
+            card["data"]["state"] = "unknown"
+            self._add_visual(card)
+            return f"{verb} dedim ama kaska ulaşamadım: {result}"
+        self._add_visual(card)
+        return f"{verb}." if action != "durum" else f"{verb}: {result}"
 
     # ------------------------------------------------------------ bilgi deposu (v2.8)
     def _knowledge_command(self, text, source):
@@ -350,6 +400,19 @@ class JarvisBrain:
 
         Bulunanları modele sistem mesajı olarak ekler. Kullanılan aracın adlarını üretir (akış için).
         """
+        # v3.0: hava durumu sorusu -> gerçek veri (Open-Meteo) modele verilir, hava kartı açılır
+        if getattr(self, "weather_enabled", False) and is_weather_question(text):
+            try:
+                from core import weather
+                w = weather.get_weather(extract_location(text), tomorrow="yarın" in _fold(text))
+                yield "get_weather"
+                messages.insert(len(messages) - 1, {"role": "system", "content":
+                                "GÜNCEL HAVA DURUMU (Open-Meteo): " + weather.summary(w) +
+                                " Kısa ve doğal cevap ver; sayıları bu veriden al, uydurma."})
+                self._add_visual(weather.visual(w))
+                return
+            except Exception as exc:
+                print("[HAVA] Alınamadı:", exc)
         kb = getattr(self, "knowledge", None)
         hits = []
         if kb is not None:
@@ -362,6 +425,20 @@ class JarvisBrain:
                 messages.insert(len(messages) - 1, {"role": "system", "content":
                                 "BİLGİ DEPOSU (kullanıcının kendi dosyaları) — soruyu önce buna göre cevapla, "
                                 "cevapta 'bilgi deposuna göre' de; depoda yoksa uydurma:\n" + kb.context(hits)})
+        # v3.0: kişi / yer / tarih sorusu ve depoda yoksa -> Vikipedi özeti + çizimli bilgi penceresi (solda)
+        if not hits and getattr(self, "wiki_enabled", False) and is_info_question(text):
+            try:
+                from core import wiki
+                info = wiki.lookup(info_topic(text))
+                if info:
+                    yield "wikipedia"
+                    messages.insert(len(messages) - 1, {"role": "system", "content":
+                                    f"VİKİPEDİ ÖZETİ ({info['title']}): {info['extract'][:1800]}\n"
+                                    "Bu bilgiye dayanarak kısa, doğru ve anlaşılır anlat; emin olmadığını uydurma."})
+                    self._add_visual(wiki.visual(info, wiki.drawing(info.get("image"))))
+                    return
+            except Exception as exc:
+                print("[BİLGİ] Vikipedi'ye ulaşılamadı:", exc)
         web = self.tools.web.should_search(text)
         if (not web and kb is not None and not hits and _cfg("KNOWLEDGE_WEB_FALLBACK", True)
                 and _QUESTION_RE.search(_fold(text))):
@@ -399,9 +476,45 @@ class JarvisBrain:
                               "Kullanıcıya bunu PC'den yapması gerektiğini söyle.")
                 else:
                     result = self.tools.execute(name, args)
+                    if name == "helmet_control":          # v3.0: kask kartı (açık / kapalı)
+                        self._add_visual(visuals.helmet_visual(result))
+                    elif name == "get_weather" and isinstance(result, str) and "°C" in result:
+                        card = getattr(self.tools, "last_visual", None)
+                        if isinstance(card, dict):
+                            self._add_visual(card)
                 messages.append({"role": "tool", "tool_name": name, "content": str(result)})
         finally:
             ctx.allowed = previous
+
+    # ------------------------------------------------------------ görsel kartlar (v3.0)
+    def _add_visual(self, card):
+        ctx = getattr(self, "_tool_ctx", None)
+        sink = getattr(ctx, "visuals", None) if ctx is not None else None
+        if sink is not None and isinstance(card, dict):
+            sink.append(card)
+
+    def _finish_visuals(self, answer):
+        """Başka kart yoksa ve cevapta kısayol geçiyorsa klavye kartı."""
+        ctx = getattr(self, "_tool_ctx", None)
+        sink = getattr(ctx, "visuals", None) if ctx is not None else None
+        if sink is not None and not sink:
+            card = visuals.keyboard_visual(answer)
+            if card:
+                sink.append(card)
+
+    def ask_with_visuals(self, text, **kwargs):
+        """HUD için: (cevap, [kart, ...]). Kartlar hava, ev, kask, bilgi ve klavye pencereleridir."""
+        ctx = getattr(self, "_tool_ctx", None)
+        if ctx is None:
+            ctx = self._tool_ctx = threading.local()
+        previous = getattr(ctx, "visuals", None)
+        ctx.visuals = []
+        try:
+            answer = self.ask(text, **kwargs)
+            self._finish_visuals(answer)
+            return answer, list(ctx.visuals)
+        finally:
+            ctx.visuals = previous
 
     def ask(self, text, session_id=None, source=None, allow_planning=True, allowed_tools=None):
         """Etkileşimli sohbet. Parametresiz çağrı eskisi gibi HUD oturumunu kullanır.
@@ -480,6 +593,22 @@ class JarvisBrain:
         answer = answer or "İşlem tamamlandı."
         self.memory.save_message("assistant", answer, session_id, source)
         yield {"type": "done", "reply": answer}
+
+    def ask_stream_with_visuals(self, text, **kwargs):
+        """ask_stream + sonda {"type": "visual", "visual": kart} olayları (telefon ileride kullanabilir)."""
+        ctx = getattr(self, "_tool_ctx", None)
+        if ctx is None:
+            ctx = self._tool_ctx = threading.local()
+        ctx.visuals = []
+        reply = ""
+        for ev in self.ask_stream(text, **kwargs):
+            if ev.get("type") == "done":
+                reply = ev.get("reply", "")
+                self._finish_visuals(reply)
+                for card in list(ctx.visuals):
+                    yield {"type": "visual", "visual": card}
+            yield ev
+        ctx.visuals = None
 
     # ------------------------------------------------------------ arka plan görevleri
     def _background_ask(self, prompt, task_id=None, allowed_tools=None):

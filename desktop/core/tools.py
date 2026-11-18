@@ -214,6 +214,8 @@ TOOLS = [
     {"type":"function","function":{"name":"copy_selected_text","description":"Aktif pencerede seçili metni Ctrl+C ile panoya kopyala ve metni geri döndür. Kullanıcı açıkça seçili metni kopyalamanı istediğinde kullan.","parameters":{"type":"object","properties":{}}}},
     {"type":"function","function":{"name":"paste_clipboard","description":"Windows panosundaki içeriği aktif pencereye Ctrl+V ile yapıştır. Kullanıcı açıkça yapıştırmanı istediğinde kullan.","parameters":{"type":"object","properties":{"press_enter":{"type":"boolean","description":"Yapıştırmadan sonra Enter'a basılsın mı?"}}}}},
     {"type":"function","function":{"name":"paste_text","description":"Verilen metni panoya kopyala ve aktif pencereye Ctrl+V ile yapıştır. Kullanıcı açıkça bir metni bir uygulamaya yapıştırmanı istediğinde kullan.","parameters":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"press_enter":{"type":"boolean","description":"Yapıştırmadan sonra Enter'a basılsın mı?"}}}}},
+    # v3.0: hava durumu (Open-Meteo, ücretsiz) — HUD'da hava kartı açılır
+    {"type":"function","function":{"name":"get_weather","description":"Bir yerin güncel hava durumunu (sıcaklık, yağış, rüzgar) getir. Yer verilmezse kullanıcının şehri.","parameters":{"type":"object","properties":{"place":{"type":"string"},"tomorrow":{"type":"boolean"}}}}},
     # v2.8: bilgi deposu (D:/JARVIS_Bilgi)
     {"type":"function","function":{"name":"knowledge_search","description":"Kullanıcının bilgisayarındaki bilgi deposunda (kendi notları ve dosyaları) ara. Kullanıcıya özel bilgiler için web'den önce bunu kullan.","parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string"}}}}},
     {"type":"function","function":{"name":"knowledge_save","description":"Bir bilgiyi kullanıcının bilgi deposuna not olarak kaydet. Yalnızca kullanıcı açıkça depoya/kaydetmeye dediğinde kullan.","parameters":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"title":{"type":"string"}}}}},
@@ -257,6 +259,11 @@ class ToolManager:
                 return "Hafıza kaydedildi." if self.memory.save_memory(args.get("memory", "")) else "Bu bilgi zaten hafızada."
             if name == "forget_memory":
                 return f"{self.memory.forget_memory(args.get('phrase', ''))} hafıza kaydı unutuldu."
+            if name == "get_weather":
+                from core import weather
+                w = weather.get_weather(args.get("place", ""), bool(args.get("tomorrow", False)))
+                self.last_visual = weather.visual(w)
+                return weather.summary(w)
             if name in ("knowledge_search", "knowledge_save"):
                 kb = getattr(self, "knowledge", None)
                 if kb is None:
