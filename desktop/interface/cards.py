@@ -221,6 +221,9 @@ def _wx_texts(layer, hud, d, p, now):
     x, y, w, h = WX["x"], WX["y"], WX["w"], WX["h"]
     frame_label(hud, x, y, w, p, "HAVA DURUMU", f"{str(d.get('place', '')).upper()}  ·  {str(d.get('day', '')).upper()}")
     y += (1 - p) * 18
+    if d.get("updated"):
+        hud.text(f"CANLI VERİ  ·  OPEN-METEO  ·  {d['updated']}", x + w - 16, y + h - 28, 10, TXT, 0.45 * p,
+                 align="r", spacing=1.5)
     big = d.get("temp") if d.get("temp") is not None else d.get("max")
     hud.text(f"{big}°" if big is not None else "--", x + 330, y + 62, 64, (0.92, 0.98, 1.0), 0.95 * p, bold=True)
     hud.text(str(d.get("desc", "")).upper(), x + 330, y + 150, 16, TXT, 0.85 * p, spacing=3)

@@ -1,7 +1,8 @@
 """
 JARVIS v2.2 — Motor seçilebilen ses (TTS) katmanı
 =================================================
-config.TTS_ENGINE = "gemini" | "elevenlabs" | "edge"   (varsayılan "gemini")
+config.TTS_ENGINE = "gemini" | "elevenlabs" | "edge" | "piper"   (varsayılan "gemini")
+v3.1: "piper" — ücretsiz, çevrimdışı, bilgisayarda çalışan Türkçe ses (data/piper/*.onnx).
 
 Seçilen motor hata verirse ya da anahtarı yoksa sırayla
 gemini → edge → pyttsx3 denenir ve konsola hangisine düşüldüğü yazılır.
@@ -67,6 +68,10 @@ DEFAULTS = {
     "TTS_CACHE_PHRASES": ["Efendim.", "Hemen bakıyorum.", "Tamamdır.", "Bir saniye efendim.",
                           "Anlaşıldı.", "Buyurun efendim."],
     "TTS_PREFETCH": 2,
+    "PIPER_VOICE": "tr_TR-dfki-medium",
+    "PIPER_DIR": "data/piper",
+    "PIPER_SPEED": None,
+    "PIPER_AUTO_DOWNLOAD": True,
 }
 
 # Gemini'nin hazır seslerinden SES_DENE.bat'ta denenen erkek sesler.
@@ -313,10 +318,95 @@ class Pyttsx3Engine:
         return data, "wav"
 
 
+PIPER_OFFICIAL = {   # rhasspy/piper-voices (Hugging Face) — eksikse ilk kullanımda indirilir
+    "tr_TR-dfki-medium": "https://huggingface.co/rhasspy/piper-voices/resolve/main/tr/tr_TR/dfki/medium/tr_TR-dfki-medium",
+}
+
+
+class PiperEngine:
+    """v3.1: Piper — ücretsiz, tamamen bilgisayarda çalışan sinir ağı sesi (internet gerekmez, anahtar yok).
+
+    Ses dosyaları data/piper/<ad>.onnx (+ .onnx.json). PIPER_VOICE ile seçilir; PIPER_SPEED < 1 daha hızlı konuşur.
+    """
+    name = "piper"
+    _lock = threading.Lock()
+    _voices = {}
+
+    def _voice_name(self):
+        return str(cfg("PIPER_VOICE") or "tr_TR-dfki-medium").strip()
+
+    def signature(self):
+        return f"{self._voice_name()}|{cfg('PIPER_SPEED') or 1.0}"
+
+    def _model_path(self, name):
+        try:
+            from core.paths import resolve
+            base = resolve(cfg("PIPER_DIR") or "data/piper")
+        except Exception:
+            base = Path("data/piper")
+        return base / f"{name}.onnx"
+
+    def _ensure(self, name):
+        path = self._model_path(name)
+        if path.exists() and Path(str(path) + ".json").exists():
+            return path
+        url = PIPER_OFFICIAL.get(name)
+        if not url or cfg("PIPER_AUTO_DOWNLOAD") is False:
+            raise TTSUnavailable(f"Piper sesi yok: {path} (data/piper klasörüne .onnx ve .onnx.json koy)")
+        print(f"[SES] Piper sesi indiriliyor (bir kez, ~60 MB): {name}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        http = _requests()
+        for suffix in (".onnx.json", ".onnx"):
+            r = http.get(url + suffix, timeout=120)
+            r.raise_for_status()
+            Path(str(path)[:-5] + suffix).write_bytes(r.content)
+        return path
+
+    def _load(self):
+        name = self._voice_name()
+        if name not in self._voices:
+            try:
+                from piper import PiperVoice
+            except ImportError:
+                raise TTSUnavailable("piper-tts kurulu değil (py -m pip install piper-tts)")
+            self._voices[name] = PiperVoice.load(str(self._ensure(name)))
+        return self._voices[name]
+
+    def synthesize(self, text, voice=None):
+        import io
+        import wave
+        with self._lock:
+            pv = self._load()
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                speed = cfg("PIPER_SPEED")
+                syn = None
+                if speed:
+                    try:
+                        from piper import SynthesisConfig
+                        syn = SynthesisConfig(length_scale=float(speed))
+                    except Exception:
+                        syn = None
+                if syn is not None:
+                    pv.synthesize_wav(text, wf, syn_config=syn)
+                else:
+                    pv.synthesize_wav(text, wf)
+        data = buf.getvalue()
+        if len(data) <= 44:
+            raise RuntimeError("Piper boş ses üretti")
+        return data, "wav"
+
+
+def _requests():
+    import requests
+    return requests
+
+
 ENGINES = {
     "gemini": GeminiEngine(),
     "elevenlabs": ElevenLabsEngine(),
     "edge": EdgeEngine(),
+    "piper": PiperEngine(),
     "pyttsx3": Pyttsx3Engine(),
 }
 

@@ -104,7 +104,7 @@ PHONE_ALLOW_CORS = True
 BACKGROUND_TRACEBACK_CHARS = 6000
 
 # JARVIS v2.2 — Ses motoru (voice/tts.py)
-# "gemini" | "elevenlabs" | "edge". Seçilen motor hata verirse ya da anahtarı yoksa
+# "gemini" | "elevenlabs" | "edge" | "piper". Seçilen motor hata verirse ya da anahtarı yoksa
 # sırayla gemini → edge → pyttsx3 denenir (konsola hangisine düşüldüğü yazılır).
 TTS_ENGINE = "gemini"
 # Gemini: anahtar GEMINI_API_KEY ortam değişkeninden okunur (setx GEMINI_API_KEY "...").
@@ -117,6 +117,12 @@ ELEVENLABS_VOICE_ID = ""
 ELEVENLABS_MODEL = "eleven_multilingual_v2"   # Türkçe destekli çok dilli model
 ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_128"
 ELEVENLABS_TIMEOUT = 30
+# v3.1 Piper: ücretsiz, internetsiz, bilgisayarda çalışan ses. TTS_ENGINE = "piper" ile seçilir.
+# Ses dosyaları data/piper/<PIPER_VOICE>.onnx (+ .onnx.json); resmi Türkçe ses eksikse ilk kullanımda indirilir.
+PIPER_VOICE = "tr_TR-dfki-medium"
+PIPER_DIR = "data/piper"
+PIPER_SPEED = None                  # length_scale: 0.9 biraz hızlı, 1.1 biraz yavaş; None = sesin kendi hızı
+PIPER_AUTO_DOWNLOAD = True
 # Hız: uzun cevap cümlelere bölünür; aynı anda en fazla bu kadar cümle üretilir.
 TTS_PREFETCH = 2
 # Kısa cümleler data/tts_cache/ içinde saklanır (ses/motor değişince yeniden üretilir).

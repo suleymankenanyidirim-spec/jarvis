@@ -11,7 +11,7 @@ from core import visuals
 GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _CACHE = {}
-CACHE_SECONDS = 600
+CACHE_SECONDS = 300          # en fazla 5 dk eski veri
 
 
 def _cfg(name, default=None):
@@ -69,6 +69,7 @@ def get_weather(place="", tomorrow=False, http=None):
     icon, desc = visuals.weather_icon(code)
     out = {
         "place": label, "day": "yarın" if tomorrow else "bugün",
+        "updated": time.strftime("%H:%M"), "fetched_at": time.time(),
         "temp": None if tomorrow else _round(cur.get("temperature_2m")),
         "feels": None if tomorrow else _round(cur.get("apparent_temperature")),
         "humidity": None if tomorrow else _round(cur.get("relative_humidity_2m")),

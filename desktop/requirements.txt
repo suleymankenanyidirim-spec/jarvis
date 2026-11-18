@@ -18,3 +18,4 @@ pyperclip
 pyautogui
 qrcode
 pypdf
+piper-tts

@@ -491,6 +491,8 @@ class JarvisBrain:
         ctx = getattr(self, "_tool_ctx", None)
         sink = getattr(ctx, "visuals", None) if ctx is not None else None
         if sink is not None and isinstance(card, dict):
+            # aynı türden yeni kart eskisinin yerine geçer (ör. model başka bir şehrin havasını sorduysa en son veri)
+            sink[:] = [c for c in sink if c.get("type") != card.get("type")]
             sink.append(card)
 
     def _finish_visuals(self, answer):

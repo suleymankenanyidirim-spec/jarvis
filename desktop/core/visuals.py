@@ -101,6 +101,35 @@ def weather_icon(code):
     return WMO.get(int(code) if code is not None else -1, ("cloud", "Bilinmiyor"))
 
 
+# Türkiye'nin illeri ve sık sorulan ilçeler: yazım ne olursa olsun ("izmirde", "İzmir'in", "izmir hava") tanınır.
+TR_PLACES = (
+    "Adana Adıyaman Afyonkarahisar Ağrı Aksaray Amasya Ankara Antalya Ardahan Artvin Aydın Balıkesir Bartın Batman "
+    "Bayburt Bilecik Bingöl Bitlis Bolu Burdur Bursa Çanakkale Çankırı Çorum Denizli Diyarbakır Düzce Edirne Elazığ "
+    "Erzincan Erzurum Eskişehir Gaziantep Giresun Gümüşhane Hakkari Hatay Iğdır Isparta İstanbul İzmir Kahramanmaraş "
+    "Karabük Karaman Kars Kastamonu Kayseri Kilis Kırıkkale Kırklareli Kırşehir Kocaeli Konya Kütahya Malatya Manisa "
+    "Mardin Mersin Muğla Muş Nevşehir Niğde Ordu Osmaniye Rize Sakarya Samsun Şanlıurfa Siirt Sinop Sivas Şırnak "
+    "Tekirdağ Tokat Trabzon Tunceli Uşak Van Yalova Yozgat Zonguldak "
+    "Kadıköy Beşiktaş Üsküdar Şişli Bakırköy Beylikdüzü Esenyurt Ataşehir Maltepe Kartal Pendik Sarıyer Fatih "
+    "Bodrum Marmaris Fethiye Alanya Kuşadası Çeşme Didim Kemer Side Kapadokya Gebze İzmit Urfa Antep Maraş"
+).split()
+
+
+_PLACE_SUFFIXES = {"", "da", "de", "ta", "te", "dan", "den", "tan", "ten", "in", "un", "nin", "nun", "a", "e", "ya",
+                   "ye", "daki", "deki", "taki", "teki", "nda", "nde", "ndaki", "ndeki", "li", "lu", "ya", "yi", "i",
+                   "u", "y", "yin", "yun"}
+
+
+def _known_place(text):
+    """Metindeki il/ilçe adı (ad + yalnızca hâl eki: "izmirde", "ankaranın"); yoksa ''."""
+    words = turkish.words(text, min_len=3)
+    for place in TR_PLACES:
+        p = turkish.fold(place)
+        for w in words:
+            if w.startswith(p) and w[len(p):] in _PLACE_SUFFIXES:
+                return place
+    return ""
+
+
 _LOC_STOP = {"hava", "durumu", "bugün", "yarın", "şu", "an", "nasıl", "kaç", "derece", "jarvis", "acaba", "orada",
              "burada", "bizim", "benim", "bu", "hafta", "akşam", "sabah"}
 
@@ -108,6 +137,9 @@ _LOC_STOP = {"hava", "durumu", "bugün", "yarın", "şu", "an", "nasıl", "kaç"
 def extract_location(text):
     """'Ankara'da hava nasıl' -> 'Ankara'. Bulamazsa ''. (Yer adı yazımı: büyük harfle ya da 'X'te/'X'de' ekiyle.)"""
     t = str(text or "")
+    known = _known_place(t)
+    if known:
+        return known
 
     def clean(name):
         words = [w for w in name.split() if turkish.tr_lower(w) not in _LOC_STOP]
